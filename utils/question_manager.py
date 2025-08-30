@@ -45,32 +45,39 @@ class QuestionManager:
             else:
                 print(f"Analytical/{topic}: No questions found")
     
-    def _load_topic_questions(self, topic_path, topic_name):
-        questions = []
-        
-        # Check if questions.json exists
-        json_path = os.path.join(topic_path, 'questions.json')
-        if os.path.exists(json_path):
-            try:
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    questions = json.load(f)
-                print(f"  ✓ Loaded from questions.json")
-            except Exception as e:
-                print(f"  ✗ Error loading {json_path}: {e}")
-        
-        # Load image files (but don't auto-create questions)
-        # Images should be referenced in questions.json instead
-        image_extensions = ['.png', '.jpg', '.jpeg', '.gif']
-        if os.path.exists(topic_path):
-            image_files = []
-            for file in os.listdir(topic_path):
-                if any(file.lower().endswith(ext) for ext in image_extensions):
-                    image_files.append(file)
+    def _load_topic_questions(self, topic_path, subject, topic_name):
+    questions = []
+    
+    # Check if questions.json exists
+    json_path = os.path.join(topic_path, 'questions.json')
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                questions = json.load(f)
             
-            if image_files:
-                print(f"  📷 Found {len(image_files)} images")
-        
-        return questions
+            # FIX IMAGE PATHS - This is the key fix!
+            for question in questions:
+                if 'image_path' in question:
+                    image_rel_path = question['image_path']
+                    
+                    # If path is relative, make it absolute relative to the topic folder
+                    if not os.path.isabs(image_rel_path):
+                        # Join with the topic path to get full absolute path
+                        absolute_path = os.path.join(topic_path, image_rel_path)
+                        question['image_path'] = absolute_path
+                    
+                    # Verify the image actually exists
+                    if not os.path.exists(question['image_path']):
+                        print(f"❌ Image not found: {question['image_path']}")
+                        # Remove invalid path to prevent errors
+                        question.pop('image_path', None)
+                    else:
+                        print(f"✅ Image found: {question['image_path']}")
+                        
+        except Exception as e:
+            print(f"Error loading {json_path}: {e}")
+    
+    return questions
     
     def get_question(self, subject, topic):
         if subject not in self.questions or topic not in self.questions[subject]:
@@ -84,4 +91,5 @@ class QuestionManager:
     
     def generate_mock_test(self):
         # This will be empty until you add questions
+
         return []
