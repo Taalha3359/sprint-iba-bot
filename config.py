@@ -37,7 +37,7 @@ IMAGE_PATHS = {
 
 # Math topics
 MATH_TOPICS = [
-    "age", "average", "fraction", "interest", "number",
+    "age", "average", "fraction", "interest", "Number",
     "permutation", "profit-loss", "ratio", "solids", "triangle",
     "angle", "circle", "inequality", "mixture", "percentage",
     "probability", "quadrilateral", "set", "speed", "workdone"
