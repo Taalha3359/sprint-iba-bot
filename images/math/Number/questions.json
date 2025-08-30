@@ -3,9 +3,10 @@
     "question": "Refer to the image for this number problem",
     "options": ["A", "B", "C", "D", "E"],
     "correct_answer": 2,
-    "image_path": "sprint-iba-bot/images/math/number/q1.png"
+    "image_path": "images/math/number/q1.png"
   }
 
 
 ]
+
 
