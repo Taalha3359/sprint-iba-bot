@@ -1,0 +1,9 @@
+[
+  {
+    "question": "Refer to the image for this number problem",
+    "options": ["A", "B", "C", "D", "E"],
+    "correct_answer": 2,
+    "image_path": "images/math/Number/q1.png"
+  }
+
+]
