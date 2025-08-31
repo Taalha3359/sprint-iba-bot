@@ -18,7 +18,7 @@ class AccessControl:
         # Check premium channel access
         if channel_id == config.PREMIUM_SETTINGS["premium_channel_id"]:
             # Check if user has active premium
-            if self.db.check_premium_status(user_id):
+            if self._check_premium_status(user_id):
                 return True, "premium_channel"
             else:
                 return False, "no_premium_in_channel"
@@ -29,24 +29,24 @@ class AccessControl:
             return True, "free_access"
         else:
             return False, "limit_reached"
-
+    
     def _check_premium_status(self, user_id):
-    user_data = self.db.get_user(user_id)
-    if user_data.get('premium_until'):
-        try:
-            premium_until = datetime.fromisoformat(user_data['premium_until'])
-            if datetime.now() > premium_until:
+        user_data = self.db.get_user(user_id)
+        if user_data.get('premium_until'):
+            try:
+                premium_until = datetime.fromisoformat(user_data['premium_until'])
+                if datetime.now() > premium_until:
+                    user_data['premium_access'] = False
+                    user_data['premium_until'] = None
+                    self.db.update_user(user_id, user_data)
+                    return False
+                return True
+            except:
                 user_data['premium_access'] = False
                 user_data['premium_until'] = None
                 self.db.update_user(user_id, user_data)
                 return False
-            return True
-        except:
-            user_data['premium_access'] = False
-            user_data['premium_until'] = None
-            self.db.update_user(user_id, user_data)
-            return False
-    return False
+        return False
     
     def get_remaining_questions(self, user_id):
         user_data = self.db.get_user(user_id)
@@ -59,7 +59,7 @@ class AccessControl:
             embed = discord.Embed(
                 title="🚫 Premium Access Required",
                 description="This channel requires premium access to use the bot.\n\n"
-                          f"Please purchase a ticket from an admin to access premium features.",
+                          f"Please ask an admin for a ticket to access premium features.",
                 color=discord.Color.red()
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -70,8 +70,7 @@ class AccessControl:
                 description=f"You've used all {config.PREMIUM_SETTINGS['free_question_limit']} free questions!\n\n"
                           f"**To continue practicing:**\n"
                           f"• Join our premium channel for unlimited access\n"
-                          f"• Ask an admin for a trial ticket\n"
-                          f"• Wait for your monthly limit reset",
+                          f"• Ask an admin for a trial ticket",
                 color=discord.Color.orange()
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
