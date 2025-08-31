@@ -51,195 +51,281 @@ async def on_ready():
     except Exception as e:
         print(f"Error: {e}")
 
-# Math practice command
 @bot.tree.command(name="math_practice", description="Practice math questions")
-@app_commands.choices(topic=[
-    app_commands.Choice(name=name, value=name) for name in config.MATH_TOPICS
-])
+@app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.MATH_TOPICS])
 async def math_practice(interaction: discord.Interaction, topic: app_commands.Choice[str]):
-    user_id = interaction.user.id
-
-    # Check access
-    access_control = AccessControl(db)
-    has_access, access_type = await access_control.check_access(interaction)
-    
-    if not has_access:
-        await access_control.send_access_denied_message(interaction, access_type)
-        return
-    
-    if user_id in active_questions:
-        await interaction.response.send_message("Finish your current question first!", ephemeral=True)
-        return
-    
-    question_data = qm.get_question("math", topic.value)
-    if not question_data:
-        await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title=f"Math - {topic.value}",
-        description=f"**Question:**\n{question_data['question']}",
-        color=discord.Color.blue()
-    )
-    embed.set_footer(text=f"You have {config.TIME_LIMITS['math']} seconds")
-    
-    # Add image if available
-    if question_data.get('image_path'):
-        file = discord.File(question_data['image_path'], filename="question.png")
-        embed.set_image(url="attachment://question.png")
-    else:
-        file = None
-    
-    view = QuestionView(question_data, "math", user_id)
-    
-    if file:
-        await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
-    else:
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-    
-    active_questions[user_id] = {
-        "question": question_data,
-        "subject": "math",
-        "topic": topic.value,
-        "message": await interaction.original_response(),
-        "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['math']))
-    }
-
-    # Increment question counter for non-admin, non-premium users
-    user_data = db.get_user(user_id)
-    if not user_data.get('is_admin') and not user_data.get('premium_access'):
-        db.increment_questions_answered(user_id)
-        remaining = access_control.get_remaining_questions(user_id)
+    try:
+        user_id = interaction.user.id
         
-        # Show remaining questions in the response
-        embed.set_footer(text=f"Free questions remaining: {remaining}")
+        # Check if user already has an active question
+        if user_id in active_questions:
+            try:
+                await interaction.response.send_message("You already have an active question. Please answer it first.", ephemeral=True)
+            except discord.errors.NotFound:
+                # Interaction already expired, use followup
+                await interaction.followup.send("You already have an active question. Please answer it first.", ephemeral=True)
+            return
+        
+        # Check access
+        access_control = AccessControl(db)
+        has_access, access_type = await access_control.check_access(interaction)
+        
+        if not has_access:
+            await access_control.send_access_denied_message(interaction, access_type)
+            return
+        
+        # Get question
+        question_data = qm.get_question("math", topic.value)
+        if not question_data:
+            try:
+                await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
+            except discord.errors.NotFound:
+                await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
+            return
+        
+        # Create embed
+        embed = discord.Embed(
+            title=f"Math - {topic.value}",
+            description=f"**Question:**\n{question_data['question']}",
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text=f"You have {config.TIME_LIMITS['math']} seconds")
+        
+        # Handle image
+        file = None
+        if question_data.get('image_path') and os.path.exists(question_data['image_path']):
+            file = discord.File(question_data['image_path'], filename="question.png")
+            embed.set_image(url="attachment://question.png")
+        
+        view = QuestionView(question_data, "math", user_id)
+        
+        # Send response with error handling
+        try:
+            if file:
+                await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            
+            # Store active question if response was successful
+            active_questions[user_id] = {
+                "question": question_data,
+                "subject": "math",
+                "topic": topic.value,
+                "message": await interaction.original_response(),
+                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['math']))
+            }
+            
+        except discord.errors.NotFound:
+            # Interaction expired, send as followup instead
+            if file:
+                await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            
+            # For followup, we can't get original_response(), so handle differently
+            active_questions[user_id] = {
+                "question": question_data,
+                "subject": "math",
+                "topic": topic.value,
+                "message": None,  # Can't store message reference for followup
+                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['math']))
+            }
+            
+    except Exception as e:
+        print(f"Error in math_practice: {e}")
+        # Try to send error message if possible
+        try:
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+        except discord.errors.NotFound:
+            try:
+                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+            except:
+                pass  # Give up if both fail
 
-# English practice command
 @bot.tree.command(name="english_practice", description="Practice English questions")
-@app_commands.choices(topic=[
-    app_commands.Choice(name=name, value=name) for name in config.ENGLISH_TOPICS
-])
+@app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.ENGLISH_TOPICS])
 async def english_practice(interaction: discord.Interaction, topic: app_commands.Choice[str]):
-    user_id = interaction.user.id
-
-    # Check access
-    access_control = AccessControl(db)
-    has_access, access_type = await access_control.check_access(interaction)
-    
-    if not has_access:
-        await access_control.send_access_denied_message(interaction, access_type)
-        return
-    
-    if user_id in active_questions:
-        await interaction.response.send_message("Finish your current question first!", ephemeral=True)
-        return
-    
-    question_data = qm.get_question("english", topic.value)
-    if not question_data:
-        await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title=f"English - {topic.value}",
-        description=f"**Question:**\n{question_data['question']}",
-        color=discord.Color.green()
-    )
-    embed.set_footer(text=f"You have {config.TIME_LIMITS['english']} seconds")
-    
-    if question_data.get('image_path'):
-        file = discord.File(question_data['image_path'], filename="question.png")
-        embed.set_image(url="attachment://question.png")
-    else:
-        file = None
-    
-    view = QuestionView(question_data, "english", user_id)
-    
-    if file:
-        await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
-    else:
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-    
-    active_questions[user_id] = {
-        "question": question_data,
-        "subject": "english",
-        "topic": topic.value,
-        "message": await interaction.original_response(),
-        "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['english']))
-    }
-
-    # Increment question counter for non-admin, non-premium users
-    user_data = db.get_user(user_id)
-    if not user_data.get('is_admin') and not user_data.get('premium_access'):
-        db.increment_questions_answered(user_id)
-        remaining = access_control.get_remaining_questions(user_id)
+    try:
+        user_id = interaction.user.id
         
-        # Show remaining questions in the response
-        embed.set_footer(text=f"Free questions remaining: {remaining}")
+        # Check if user already has an active question
+        if user_id in active_questions:
+            try:
+                await interaction.response.send_message("You already have an active question. Please answer it first.", ephemeral=True)
+            except discord.errors.NotFound:
+                await interaction.followup.send("You already have an active question. Please answer it first.", ephemeral=True)
+            return
+        
+        # Check access
+        access_control = AccessControl(db)
+        has_access, access_type = await access_control.check_access(interaction)
+        
+        if not has_access:
+            await access_control.send_access_denied_message(interaction, access_type)
+            return
+        
+        # Get question
+        question_data = qm.get_question("english", topic.value)
+        if not question_data:
+            try:
+                await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
+            except discord.errors.NotFound:
+                await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
+            return
+        
+        # Create embed
+        embed = discord.Embed(
+            title=f"English - {topic.value}",
+            description=f"**Question:**\n{question_data['question']}",
+            color=discord.Color.green()
+        )
+        embed.set_footer(text=f"You have {config.TIME_LIMITS['english']} seconds")
+        
+        # Handle image
+        file = None
+        if question_data.get('image_path') and os.path.exists(question_data['image_path']):
+            file = discord.File(question_data['image_path'], filename="question.png")
+            embed.set_image(url="attachment://question.png")
+        
+        view = QuestionView(question_data, "english", user_id)
+        
+        # Send response with error handling
+        try:
+            if file:
+                await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            
+            # Store active question if response was successful
+            active_questions[user_id] = {
+                "question": question_data,
+                "subject": "english",
+                "topic": topic.value,
+                "message": await interaction.original_response(),
+                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['english']))
+            }
+            
+        except discord.errors.NotFound:
+            # Interaction expired, send as followup instead
+            if file:
+                await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            
+            # For followup, we can't get original_response(), so handle differently
+            active_questions[user_id] = {
+                "question": question_data,
+                "subject": "english",
+                "topic": topic.value,
+                "message": None,
+                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['english']))
+            }
+            
+    except Exception as e:
+        print(f"Error in english_practice: {e}")
+        try:
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+        except discord.errors.NotFound:
+            try:
+                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+            except:
+                pass
 
-# Analytical practice command
 @bot.tree.command(name="analytical_practice", description="Practice analytical questions")
-@app_commands.choices(topic=[
-    app_commands.Choice(name=name, value=name) for name in config.ANALYTICAL_TOPICS
-])
+@app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.ANALYTICAL_TOPICS])
 async def analytical_practice(interaction: discord.Interaction, topic: app_commands.Choice[str]):
-    user_id = interaction.user.id
-
-    # Check access
-    access_control = AccessControl(db)
-    has_access, access_type = await access_control.check_access(interaction)
-    
-    if not has_access:
-        await access_control.send_access_denied_message(interaction, access_type)
-        return
-    
-    if user_id in active_questions:
-        await interaction.response.send_message("Finish your current question first!", ephemeral=True)
-        return
-    
-    question_data = qm.get_question("analytical", topic.value)
-    if not question_data:
-        await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
-        return
-    
-    # Use puzzle time for puzzles, regular for others
-    time_limit = config.TIME_LIMITS['puzzle'] if topic.value == "puzzle" else config.TIME_LIMITS['analytical']
-    
-    embed = discord.Embed(
-        title=f"Analytical - {topic.value}",
-        description=f"**Question:**\n{question_data['question']}",
-        color=discord.Color.orange()
-    )
-    embed.set_footer(text=f"You have {time_limit} seconds")
-    
-    if question_data.get('image_path'):
-        file = discord.File(question_data['image_path'], filename="question.png")
-        embed.set_image(url="attachment://question.png")
-    else:
-        file = None
-    
-    view = QuestionView(question_data, "analytical", user_id)
-    
-    if file:
-        await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
-    else:
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-    
-    active_questions[user_id] = {
-        "question": question_data,
-        "subject": "analytical",
-        "topic": topic.value,
-        "message": await interaction.original_response(),
-        "timeout": asyncio.create_task(question_timeout(user_id, time_limit))
-    }
-
-    # Increment question counter for non-admin, non-premium users
-    user_data = db.get_user(user_id)
-    if not user_data.get('is_admin') and not user_data.get('premium_access'):
-        db.increment_questions_answered(user_id)
-        remaining = access_control.get_remaining_questions(user_id)
+    try:
+        user_id = interaction.user.id
         
-        # Show remaining questions in the response
-        embed.set_footer(text=f"Free questions remaining: {remaining}")
+        # Check if user already has an active question
+        if user_id in active_questions:
+            try:
+                await interaction.response.send_message("You already have an active question. Please answer it first.", ephemeral=True)
+            except discord.errors.NotFound:
+                await interaction.followup.send("You already have an active question. Please answer it first.", ephemeral=True)
+            return
+        
+        # Check access
+        access_control = AccessControl(db)
+        has_access, access_type = await access_control.check_access(interaction)
+        
+        if not has_access:
+            await access_control.send_access_denied_message(interaction, access_type)
+            return
+        
+        # Get question
+        question_data = qm.get_question("analytical", topic.value)
+        if not question_data:
+            try:
+                await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
+            except discord.errors.NotFound:
+                await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
+            return
+        
+        # Determine time limit based on topic
+        if topic.value == "puzzle":
+            time_limit = config.TIME_LIMITS['puzzle']
+        else:
+            time_limit = config.TIME_LIMITS['analytical']
+        
+        # Create embed
+        embed = discord.Embed(
+            title=f"Analytical - {topic.value}",
+            description=f"**Question:**\n{question_data['question']}",
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text=f"You have {time_limit} seconds")
+        
+        # Handle image
+        file = None
+        if question_data.get('image_path') and os.path.exists(question_data['image_path']):
+            file = discord.File(question_data['image_path'], filename="question.png")
+            embed.set_image(url="attachment://question.png")
+        
+        view = QuestionView(question_data, "analytical", user_id)
+        
+        # Send response with error handling
+        try:
+            if file:
+                await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            
+            # Store active question if response was successful
+            active_questions[user_id] = {
+                "question": question_data,
+                "subject": "analytical",
+                "topic": topic.value,
+                "message": await interaction.original_response(),
+                "timeout": asyncio.create_task(question_timeout(user_id, time_limit))
+            }
+            
+        except discord.errors.NotFound:
+            # Interaction expired, send as followup instead
+            if file:
+                await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            
+            # For followup, we can't get original_response(), so handle differently
+            active_questions[user_id] = {
+                "question": question_data,
+                "subject": "analytical",
+                "topic": topic.value,
+                "message": None,
+                "timeout": asyncio.create_task(question_timeout(user_id, time_limit))
+            }
+            
+    except Exception as e:
+        print(f"Error in analytical_practice: {e}")
+        try:
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+        except discord.errors.NotFound:
+            try:
+                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+            except:
+                pass
+
 
 # Leaderboard command
 @bot.tree.command(name="leaderboard", description="Show leaderboard")
@@ -299,32 +385,29 @@ async def profile(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
-# Question view with buttons
 class QuestionView(discord.ui.View):
     def __init__(self, question_data, subject, user_id):
-        super().__init__(timeout=None)
+        # Set timeout based on subject
+        if subject == "math":
+            timeout = config.TIME_LIMITS['math']
+        elif subject == "english":
+            timeout = config.TIME_LIMITS['english']
+        elif subject == "analytical":
+            # Check if it's a puzzle
+            if 'topic' in question_data and question_data.get('topic') == "puzzle":
+                timeout = config.TIME_LIMITS['puzzle']
+            else:
+                timeout = config.TIME_LIMITS['analytical']
+        else:
+            timeout = 60  # Default fallback
+            
+        super().__init__(timeout=timeout)
         self.question_data = question_data
         self.subject = subject
         self.user_id = user_id
         
         for i, option in enumerate(question_data['options']):
             self.add_item(QuestionButton(option, i, question_data['correct_answer']))
-    
-    async def on_timeout(self):
-        if self.user_id in active_questions:
-            user_data = db.get_user(self.user_id) or db.create_user(self.user_id)
-            subject_data = user_data.get(self.subject, {})
-            subject_data['total'] = subject_data.get('total', 0) + 1
-            subject_data['timeout'] = subject_data.get('timeout', 0) + 1
-            user_data[self.subject] = subject_data
-            db.update_user(self.user_id, user_data)
-            
-            if self.user_id in active_questions:
-                try:
-                    await active_questions[self.user_id]['message'].edit(content="Time's up!", view=None)
-                except:
-                    pass
-                del active_questions[self.user_id]
 
 class QuestionButton(discord.ui.Button):
     def __init__(self, option, index, correct_index):
@@ -544,6 +627,7 @@ async def debug_questions(interaction: discord.Interaction):
 if __name__ == "__main__":
 
     bot.run(config.BOT_TOKEN)
+
 
 
 
