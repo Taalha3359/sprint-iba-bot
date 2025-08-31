@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import os
 from bson import ObjectId
 import json
+import asyncio
 
 class MongoDB:
     def __init__(self):
@@ -12,15 +13,19 @@ class MongoDB:
         self.users = self.db.users
         self.leaderboard = self.db.leaderboard
         
-        # Create indexes for better performance
-        asyncio.run(self._create_indexes())
+        # Create indexes in the background
+        asyncio.create_task(self._create_indexes())
     
     async def _create_indexes(self):
         """Create indexes for better query performance"""
-        await self.users.create_index("_id")
-        await self.users.create_index("premium_until")
-        await self.users.create_index("is_admin")
-        await self.leaderboard.create_index("_id")
+        try:
+            await self.users.create_index("_id")
+            await self.users.create_index("premium_until")
+            await self.users.create_index("is_admin")
+            await self.leaderboard.create_index("_id")
+            print("✅ Database indexes created successfully")
+        except Exception as e:
+            print(f"❌ Error creating database indexes: {e}")
     
     async def get_user(self, user_id):
         """Get user data from MongoDB"""
@@ -248,3 +253,4 @@ async def test_connection():
 if __name__ == "__main__":
     # Run connection test
     asyncio.run(test_connection())
+
