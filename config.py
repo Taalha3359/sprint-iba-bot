@@ -54,3 +54,16 @@ ENGLISH_TOPICS = [
 ANALYTICAL_TOPICS = [
     "cr", "ds", "puzzle"
 ]
+
+# Premium access settings
+PREMIUM_SETTINGS = {
+    "premium_channel_id": 1411595567934738432,  # Replace with your premium channel ID
+    "free_question_limit": 30,
+    "admin_ids": [1344538585516478494],  # Replace with admin user IDs
+    "ticket_durations": {
+        "7days": 7,
+        "14days": 14, 
+        "1month": 30,
+        "3months": 90
+    }
+}
