@@ -47,6 +47,13 @@ async def before_cleanup():
 async def on_ready():
     print(f'{bot.user} is now online!')
     
+    # Initialize database indexes
+    try:
+        await db.ensure_indexes()
+        print("✅ Database indexes initialized")
+    except Exception as e:
+        print(f"⚠️  Could not initialize database indexes: {e}")
+    
     # Start background tasks
     cleanup_expired_premium.start()
     
@@ -546,3 +553,4 @@ async def on_app_command_error(interaction, error):
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
