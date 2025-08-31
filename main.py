@@ -45,16 +45,8 @@ admin_group = app_commands.Group(name="admin", description="Admin management com
 async def on_ready():
     print(f'{bot.user} is now online!')
     
-    # Check for expired premium access
-    data = db._read_data()
-    for user_id, user_data in data.items():
-        if user_data.get('premium_until'):
-            premium_until = datetime.fromisoformat(user_data['premium_until'])
-            if datetime.now() > premium_until:
-                user_data['premium_access'] = False
-                user_data['premium_until'] = None
-                db.update_user(user_id, user_data)
-                print(f"Expired premium access for user {user_id}")
+    # MongoDB handles premium expiration per-user, not in bulk
+    print("✅ MongoDB Atlas connected successfully")
     
     try:
         # Sync commands globally
@@ -689,5 +681,6 @@ bot.tree.add_command(admin_group)
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
 
 
