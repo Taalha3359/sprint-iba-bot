@@ -7,22 +7,22 @@ import asyncio
 
 class MongoDB:
     def __init__(self):
-    self.mongo_uri = os.getenv('MONGO_URI', 'mongodb://localhost:27017/discord_bot')
-    self.client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
-    # Extract database name from URI or use default
-    if '/' in self.mongo_uri:
-        db_name = self.mongo_uri.split('/')[-1].split('?')[0]
-        # Handle case where database name might be empty
-        if not db_name or db_name == '':
+        self.mongo_uri = os.getenv('MONGO_URI', 'mongodb://localhost:27017/discord_bot')
+        self.client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
+        # Extract database name from URI or use default
+        if '/' in self.mongo_uri:
+            db_name = self.mongo_uri.split('/')[-1].split('?')[0]
+            # Handle case where database name might be empty
+            if not db_name or db_name == '':
+                db_name = 'discord_bot'
+        else:
             db_name = 'discord_bot'
-    else:
-        db_name = 'discord_bot'
-    self.db = self.client[db_name]
-    self.users = self.db.users
-    self.leaderboard = self.db.leaderboard
-    
-    # Don't create indexes immediately - we'll do it on first connection
-    self.indexes_created = False
+        self.db = self.client[db_name]
+        self.users = self.db.users
+        self.leaderboard = self.db.leaderboard
+        
+        # Don't create indexes immediately - we'll do it on first connection
+        self.indexes_created = False
     
     async def ensure_indexes(self):
         """Ensure indexes are created (call this on startup)"""
@@ -242,4 +242,3 @@ class MongoDB:
 class UserDatabase(MongoDB):
     """Legacy class name for backward compatibility"""
     pass
-
