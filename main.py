@@ -435,20 +435,14 @@ class QuestionButton(discord.ui.Button):
             await interaction.response.send_message("Question expired", ephemeral=True)
             return
         
-        # 🔥 FIX: Get fresh user data from database
-        user_data = db._read_data().get(str(user_id), {})
-        if not user_data:
-            user_data = db.create_user(user_id)
-        
+        # 🔥 FIXED: Use MongoDB method, not _read_data()
+        user_data = db.get_user(user_id)
         question_data = active_questions[user_id]
         subject = question_data['subject']
         topic = question_data['topic']
         
-        # Increment question count - ensure this works
+        # Increment question count
         db.increment_questions_answered(user_id)
-        
-        # Update local user_data with fresh values
-        user_data = db.get_user(user_id)  # Get updated data
         
         subject_data = user_data.get(subject, {})
         subject_data['total'] = subject_data.get('total', 0) + 1
@@ -469,25 +463,28 @@ class QuestionButton(discord.ui.Button):
         db.update_user(user_id, user_data)
         lb.update_score(user_id, user_data['total_score'])
         
+        # DEFER response first to prevent interaction timeout
+        await interaction.response.defer(ephemeral=True)
+        
         embed = discord.Embed(title=result_text, color=color)
         embed.add_field(name="Your Answer", value=self.label, inline=True)
         embed.add_field(name="Score", value=user_data['total_score'], inline=True)
         
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         
         if user_id in active_questions:
             active_questions[user_id]['timeout'].cancel()
             try:
+                # Try to edit the original question message to remove buttons
                 await active_questions[user_id]['message'].edit(view=None)
             except:
                 pass
             del active_questions[user_id]
 
-# Timeout handler
 async def question_timeout(user_id, timeout):
     await asyncio.sleep(timeout)
     if user_id in active_questions:
-        user_data = db.get_user(user_id) or db.create_user(user_id)
+        user_data = db.get_user(user_id)  # Use MongoDB method
         question_data = active_questions[user_id]
         subject = question_data['subject']
         
@@ -784,6 +781,7 @@ bot.tree.add_command(admin_group)
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
 
 
 
