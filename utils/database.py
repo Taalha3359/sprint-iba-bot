@@ -1,12 +1,6 @@
 import os
 from pymongo import MongoClient
 from datetime import datetime, timedelta
-import json
-
-import os
-from pymongo import MongoClient
-from datetime import datetime, timedelta
-import ssl  # ADD THIS IMPORT
 
 class UserDatabase:
     def __init__(self):
@@ -15,62 +9,48 @@ class UserDatabase:
         if not self.connection_string:
             raise ValueError("MONGODB_URI environment variable is not set")
         
-        # ADD TLS/SSL FIX - Remove existing timeout parameters first
-        # Clean the connection string
-        if "connectTimeoutMS" in self.connection_string:
-            # Remove existing timeout parameters
-            import re
-            self.connection_string = re.sub(r'&?connectTimeoutMS=\d+', '', self.connection_string)
-            self.connection_string = re.sub(r'&?socketTimeoutMS=\d+', '', self.connection_string)
-            self.connection_string = re.sub(r'&?serverSelectionTimeoutMS=\d+', '', self.connection_string)
-        
-        # Add TLS/SSL configuration
-        tls_params = "&tls=true&tlsAllowInvalidCertificates=false"
-        if "?" in self.connection_string:
-            self.connection_string += f"&connectTimeoutMS=10000&socketTimeoutMS=10000&serverSelectionTimeoutMS=10000{tls_params}"
-        else:
-            self.connection_string += f"?connectTimeoutMS=10000&socketTimeoutMS=10000&serverSelectionTimeoutMS=10000{tls_params}"
-        
-        print(f"Connecting to MongoDB with TLS...")
+        print("Attempting MongoDB connection...")
         
         try:
-            # Connect with SSL/TLS configuration
+            # CLEAN CONNECTION STRING - remove any existing parameters
+            base_connection_string = self.connection_string.split('?')[0]  # Remove existing query parameters
+            
+            # BUILD PROPER CONNECTION STRING
+            proper_connection_string = f"{base_connection_string}?retryWrites=true&w=majority&appName=Cluster0"
+            
+            # SIMPLE CONNECTION - let MongoDB handle the SSL automatically
             self.client = MongoClient(
-                self.connection_string,
-                ssl=True,
-                ssl_cert_reqs=ssl.CERT_NONE,  # This might be needed for GitHub Actions
+                proper_connection_string,
                 serverSelectionTimeoutMS=10000,
                 connectTimeoutMS=10000,
                 socketTimeoutMS=10000
             )
             
-            # Test connection immediately
+            # Quick test
             self.client.admin.command('ping')
             self.db = self.client.sprint_bot
             self.users = self.db.users
-            print("✅ Successfully connected to MongoDB Atlas with TLS")
+            print("✅ Successfully connected to MongoDB Atlas")
             
         except Exception as e:
             print(f"❌ MongoDB connection failed: {e}")
-            # Try alternative connection without SSL
+            
+            # Try with direct connection string (no modifications)
             try:
-                print("🔄 Trying connection without SSL...")
-                # Remove SSL requirements from connection string
-                alt_connection_string = self.connection_string.replace("&tls=true", "").replace("tls=true", "")
+                print("🔄 Trying direct connection string...")
                 self.client = MongoClient(
-                    alt_connection_string,
-                    ssl=False,  # Disable SSL
+                    self.connection_string,  # Use original string as-is
                     serverSelectionTimeoutMS=10000,
-                    connectTimeoutMS=10000,
+                    connectTimeoutMS=10000, 
                     socketTimeoutMS=10000
                 )
                 self.client.admin.command('ping')
                 self.db = self.client.sprint_bot
                 self.users = self.db.users
-                print("✅ Connected to MongoDB without SSL")
+                print("✅ Connected with direct connection string")
                 
             except Exception as alt_e:
-                print(f"❌ Both connection attempts failed: {alt_e}")
+                print(f"❌ Direct connection also failed: {alt_e}")
                 # Fallback to in-memory storage
                 self.fallback_mode = True
                 self.fallback_data = {}
@@ -82,7 +62,7 @@ class UserDatabase:
             return self.fallback_data.get(str(user_id), self.create_user(user_id))
         
         try:
-            user_data = self.users.find_one({'_id': str(user_id)})  # Use _id for MongoDB
+            user_data = self.users.find_one({'_id': str(user_id)})
             if not user_data:
                 return self.create_user(user_id)
             
@@ -99,7 +79,6 @@ class UserDatabase:
             return self.fallback_data.get(str(user_id), self.create_user(user_id))
     
     def create_user(self, user_id):
-        """YOUR EXISTING create_user METHOD - KEEP THIS AS IS"""
         user_data = {
             'total_score': 0,
             'questions_answered': 0,
@@ -234,6 +213,7 @@ class UserDatabase:
                 'english': {'correct': 0, 'total': 0, 'topics': {}},
                 'analytical': {'correct': 0, 'total': 0, 'topics': {}}
             }
+
 
 
 
