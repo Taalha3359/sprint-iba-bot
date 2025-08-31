@@ -422,12 +422,20 @@ class QuestionButton(discord.ui.Button):
             await interaction.response.send_message("Question expired", ephemeral=True)
             return
         
-        user_data = db.get_user(user_id) or db.create_user(user_id)
+        # 🔥 FIX: Get fresh user data from database
+        user_data = db._read_data().get(str(user_id), {})
+        if not user_data:
+            user_data = db.create_user(user_id)
+        
         question_data = active_questions[user_id]
         subject = question_data['subject']
         topic = question_data['topic']
         
+        # Increment question count - ensure this works
         db.increment_questions_answered(user_id)
+        
+        # Update local user_data with fresh values
+        user_data = db.get_user(user_id)  # Get updated data
         
         subject_data = user_data.get(subject, {})
         subject_data['total'] = subject_data.get('total', 0) + 1
@@ -461,7 +469,7 @@ class QuestionButton(discord.ui.Button):
             except:
                 pass
             del active_questions[user_id]
-
+            
 # Timeout handler
 async def question_timeout(user_id, timeout):
     await asyncio.sleep(timeout)
@@ -485,20 +493,27 @@ async def question_timeout(user_id, timeout):
 @bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
 async def my_status(interaction: discord.Interaction):
     user_id = interaction.user.id
-    user_data = db.get_user(user_id)
     
-    # Refresh premium status check - FIXED
-    if user_data.get('premium_until'):
-        try:
-            premium_until = datetime.fromisoformat(user_data['premium_until'])
-            if datetime.now() > premium_until:
+    # 🔥 CRITICAL FIX: Force refresh user data from database
+    # This ensures we get the most current data
+    user_data = db._read_data().get(str(user_id), {})
+    
+    # If user doesn't exist in database, create them
+    if not user_data:
+        user_data = db.create_user(user_id)
+    else:
+        # Refresh premium status
+        if user_data.get('premium_until'):
+            try:
+                premium_until = datetime.fromisoformat(user_data['premium_until'])
+                if datetime.now() > premium_until:
+                    user_data['premium_access'] = False
+                    user_data['premium_until'] = None
+                    db.update_user(user_id, user_data)
+            except:
                 user_data['premium_access'] = False
                 user_data['premium_until'] = None
                 db.update_user(user_id, user_data)
-        except:
-            user_data['premium_access'] = False
-            user_data['premium_until'] = None
-            db.update_user(user_id, user_data)
     
     embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
     
@@ -512,7 +527,7 @@ async def my_status(interaction: discord.Interaction):
     else:
         embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
     
-    # Question usage
+    # Question usage - FIXED: Use the refreshed data
     questions_answered = user_data.get('questions_answered', 0)
     free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
     remaining = max(0, free_limit - questions_answered)
@@ -627,6 +642,7 @@ async def debug_questions(interaction: discord.Interaction):
 if __name__ == "__main__":
 
     bot.run(config.BOT_TOKEN)
+
 
 
 
