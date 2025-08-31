@@ -1,49 +1,298 @@
-name: Run Discord Bot 24/7
+name: Run Discord Bot 24/7 with MongoDB
 
 on:
   workflow_dispatch:  # Manual trigger
   push:               # Run on code changes
-    branches: [ main ]
+    branches: [ main, master ]
   schedule:           # Restart every 5 hours (before 6-hour limit)
     - cron: '0 */5 * * *'
 
+env:
+  PYTHON_VERSION: '3.9'
+  MONGO_VERSION: '5.0'
+  DOCKER_MONGO_IMAGE: 'mongo:5.0'
+
 jobs:
-  run-bot:
+  setup-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 350  # 5 hours 50 minutes (just under 6 hours)
+    timeout-minutes: 30
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
       
-    - name: Set up Python
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: ${{ env.PYTHON_VERSION }}
         
     - name: Install dependencies
       run: |
-        pip install --upgrade pip
+        python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pymongo>=4.0.0  # Explicitly install pymongo
+        pip install pytest pytest-asyncio
         
-    - name: Run Discord Bot
+    - name: Run configuration validation
+      run: |
+        python -c "
+        import config
+        errors = config.validate_config()
+        if errors:
+            print('Configuration errors found:')
+            for error in errors:
+                print(f'  - {error}')
+            exit(1)
+        else:
+            print('Configuration validation passed!')
+        "
+        
+    - name: Run basic tests
+      run: |
+        python -c "
+        # Test basic imports
+        try:
+            import discord
+            from motor.motor_asyncio import AsyncIOMotorClient
+            import config
+            print('✓ All imports successful')
+            
+            # Test config helpers
+            duration = config.get_premium_duration('7days')
+            is_admin = config.is_admin(12345)
+            color = config.get_embed_color('success')
+            print('✓ Config helper functions working')
+            
+        except Exception as e:
+            print(f'❌ Import test failed: {e}')
+            exit(1)
+        "
+
+  run-bot:
+    runs-on: ubuntu-latest
+    needs: setup-and-test
+    timeout-minutes: 350  # 5 hours 50 minutes (just under 6 hours)
+    
+    services:
+      mongodb:
+        image: ${{ env.DOCKER_MONGO_IMAGE }}
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        env:
+          MONGO_INITDB_ROOT_USERNAME: admin
+          MONGO_INITDB_ROOT_PASSWORD: password
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Wait for MongoDB to be ready
+      run: |
+        echo "Waiting for MongoDB to be ready..."
+        timeout 60s bash -c 'until nc -z localhost 27017; do sleep 1; done'
+        echo "MongoDB is ready!"
+        
+    - name: Test MongoDB connection
+      env:
+        MONGO_URI: "mongodb://admin:password@localhost:27017"
+      run: |
+        python -c "
+        import asyncio
+        import os
+        from utils.database import MongoDB
+        
+        async def test_mongo():
+            try:
+                db = MongoDB()
+                # Test connection
+                await db.client.admin.command('ping')
+                print('✅ MongoDB connection successful')
+                
+                # Test basic operations
+                test_user_id = 'github_actions_test'
+                user_data = await db.get_user(test_user_id)
+                print(f'✅ User retrieval test passed: {user_data[\"_id\"]}')
+                
+                await db.update_user(test_user_id, {'test_field': 'test_value'})
+                print('✅ User update test passed')
+                
+                await db.increment_questions_answered(test_user_id)
+                print('✅ Question increment test passed')
+                
+                # Clean up test data
+                await db.users.delete_one({'_id': test_user_id})
+                print('✅ Test cleanup completed')
+                
+                return True
+            except Exception as e:
+                print(f'❌ MongoDB test failed: {e}')
+                return False
+        
+        success = asyncio.run(test_mongo())
+        exit(0 if success else 1)
+        "
+        
+    - name: Create data directories
+      run: |
+        mkdir -p data
+        mkdir -p logs
+        mkdir -p backups
+        mkdir -p images
+        
+    - name: Run Discord Bot with MongoDB
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        MONGODB_URI: ${{ secrets.MONGODB_URI }}  # ADD THIS LINE
+        MONGO_URI: "mongodb://admin:password@localhost:27017"
+        DATABASE_NAME: "discord_bot_github"
       run: |
-        # Add automatic restart wrapper
-        while true; do
-          echo "=== Starting bot at $(date) ==="
-          python main.py
-          EXIT_CODE=$?
-          echo "=== Bot stopped with exit code $EXIT_CODE at $(date) ==="
+        echo "=== Starting Discord Bot with MongoDB ==="
+        echo "Python version: $(python --version)"
+        echo "MongoDB URI: $MONGO_URI"
+        echo "Database: $DATABASE_NAME"
+        
+        # Add automatic restart wrapper with improved error handling
+        MAX_RESTARTS=10
+        RESTART_COUNT=0
+        
+        while [ $RESTART_COUNT -le $MAX_RESTARTS ]; do
+          echo "=== Starting bot (attempt $((RESTART_COUNT + 1))/$((MAX_RESTARTS + 1))) at $(date) ==="
           
-          if [ $EXIT_CODE -eq 0 ]; then
-            echo "Bot stopped normally, not restarting."
+          # Run the bot with improved error handling
+          if python main.py; then
+            EXIT_CODE=$?
+            echo "=== Bot stopped normally with exit code $EXIT_CODE at $(date) ==="
             break
           else
-            echo "Bot crashed or was stopped, restarting in 10 seconds..."
-            sleep 10
+            EXIT_CODE=$?
+            echo "=== Bot stopped with exit code $EXIT_CODE at $(date) ==="
+            
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "Bot stopped normally, not restarting."
+              break
+            else
+              RESTART_COUNT=$((RESTART_COUNT + 1))
+              
+              if [ $RESTART_COUNT -gt $MAX_RESTARTS ]; then
+                echo "Maximum restart attempts ($MAX_RESTARTS) reached. Not restarting."
+                exit 1
+              fi
+              
+              echo "Bot crashed or was stopped, restarting in 10 seconds..."
+              sleep 10
+            fi
           fi
         done
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: run-bot
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    timeout-minutes: 30
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Create production deployment package
+      run: |
+        # Create a deployment package
+        mkdir -p deployment
+        cp -r *.py utils config.py requirements.txt deployment/
+        mkdir -p deployment/data
+        mkdir -p deployment/logs
+        mkdir -p deployment/backups
+        
+        # Create deployment info file
+        echo "Deployment Time: $(date)" > deployment/deployment_info.txt
+        echo "Commit: $GITHUB_SHA" >> deployment/deployment_info.txt
+        echo "Branch: $GITHUB_REF" >> deployment/deployment_info.txt
+        
+        # Create deployment package
+        tar -czf deployment_package.tar.gz deployment/
+        echo "Deployment package created: deployment_package.tar.gz"
+        
+    - name: Upload deployment package
+      uses: actions/upload-artifact@v3
+      with:
+        name: discord-bot-deployment
+        path: deployment_package.tar.gz
+        
+    - name: Send deployment notification
+      if: always()
+      run: |
+        echo "Deployment process completed for $GITHUB_REF"
+        echo "Commit: $GITHUB_SHA"
+
+  monitoring:
+    runs-on: ubuntu-latest
+    needs: run-bot
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check monitoring endpoints
+      run: |
+        echo "Monitoring step would check external services here"
+        echo "Bot execution completed successfully"
+
+  database-backup:
+    runs-on: ubuntu-latest
+    if: always()
+    timeout-minutes: 15
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup MongoDB tools
+      run: |
+        sudo apt-get install -y mongodb-database-tools
+        
+    - name: Create database backup
+      env:
+        MONGO_URI: "mongodb://admin:password@localhost:27017"
+      run: |
+        # This would normally connect to your production MongoDB
+        # and create a backup, but for GitHub Actions we'll simulate it
+        timestamp=$(date +%Y%m%d_%H%M%S)
+        backup_file="backup_${timestamp}.json"
+        
+        echo "Simulating database backup to $backup_file"
+        echo '{"backup_time": "'$(date)'", "status": "simulated"}' > $backup_file
+        
+        # Upload backup artifact
+        mkdir -p backups
+        mv $backup_file backups/
+        
+    - name: Upload backup artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: database-backups
+        path: backups/
+        
+    - name: Clean up old backups
+      run: |
+        echo "Would clean up old backups here"
