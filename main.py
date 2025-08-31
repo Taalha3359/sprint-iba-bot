@@ -566,23 +566,21 @@ async def my_status(interaction: discord.Interaction):
 ])
 async def add_ticket(interaction: discord.Interaction, user: discord.User, duration: app_commands.Choice[str]):
     try:
+        # DEFER THE RESPONSE IMMEDIATELY to prevent timeout
+        await interaction.response.defer(ephemeral=True)
+        
         print(f"🎫 Admin command received from {interaction.user.id} for user {user.id}")
         
         # Check if user is admin
         user_data = db.get_user(interaction.user.id)
         is_admin = user_data.get('is_admin') or interaction.user.id in config.PREMIUM_SETTINGS["admin_ids"]
         
-        print(f"🔍 Admin check: User {interaction.user.id}, is_admin: {is_admin}")
-        print(f"🔍 Admin IDs in config: {config.PREMIUM_SETTINGS['admin_ids']}")
-        
         if not is_admin:
-            await interaction.response.send_message("❌ Admin access required.", ephemeral=True)
+            await interaction.followup.send("❌ Admin access required.", ephemeral=True)
             return
         
         # Add premium access
         days = config.PREMIUM_SETTINGS["ticket_durations"][duration.value]
-        print(f"📅 Adding {days} days premium for user {user.id}")
-        
         premium_until = db.add_premium_access(user.id, days)
         
         embed = discord.Embed(
@@ -593,7 +591,7 @@ async def add_ticket(interaction: discord.Interaction, user: discord.User, durat
             color=discord.Color.green()
         )
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
         
         # Notify the user
         try:
@@ -612,11 +610,88 @@ async def add_ticket(interaction: discord.Interaction, user: discord.User, durat
         print(f"❌ Error in add_ticket command: {e}")
         import traceback
         traceback.print_exc()
-        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+        try:
+            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+        except:
+            print("Failed to send error message to user")
+
+@admin_group.command(name="add_ticket_by_id", description="Add premium access using user ID")
+@app_commands.choices(duration=[
+    app_commands.Choice(name="7 Days", value="7days"),
+    app_commands.Choice(name="14 Days", value="14days"),
+    app_commands.Choice(name="1 Month", value="1month"),
+    app_commands.Choice(name="3 Months", value="3months")
+])
+async def add_ticket_by_id(interaction: discord.Interaction, user_id: str, duration: app_commands.Choice[str]):
+    try:
+        # DEFER THE RESPONSE IMMEDIATELY
+        await interaction.response.defer(ephemeral=True)
+        
+        # Check if user is admin
+        user_data = db.get_user(interaction.user.id)
+        is_admin = user_data.get('is_admin') or interaction.user.id in config.PREMIUM_SETTINGS["admin_ids"]
+        
+        if not is_admin:
+            await interaction.followup.send("❌ Admin access required.", ephemeral=True)
+            return
+        
+        # Convert user_id to integer
+        try:
+            user_id_int = int(user_id)
+        except ValueError:
+            await interaction.followup.send("❌ Invalid user ID format. Please provide a numeric ID.", ephemeral=True)
+            return
+        
+        # Try to fetch user for display name
+        try:
+            user = await bot.fetch_user(user_id_int)
+            user_display = f"{user.name} ({user_id})"
+        except:
+            user_display = f"User {user_id}"
+        
+        # Add premium access
+        days = config.PREMIUM_SETTINGS["ticket_durations"][duration.value]
+        premium_until = db.add_premium_access(user_id_int, days)
+        
+        embed = discord.Embed(
+            title="✅ Ticket Added",
+            description=f"Premium access granted to {user_display}\n"
+                      f"**Duration:** {duration.name}\n"
+                      f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}",
+            color=discord.Color.green()
+        )
+        
+        await interaction.followup.send(embed=embed)
+        
+        # Try to notify the user
+        try:
+            user_obj = await bot.fetch_user(user_id_int)
+            user_embed = discord.Embed(
+                title="🎉 Premium Access Granted!",
+                description=f"You've received {duration.name} of premium access!\n"
+                          f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}\n\n"
+                          f"You can now use the bot without limits in our premium channel.",
+                color=discord.Color.gold()
+            )
+            await user_obj.send(embed=user_embed)
+        except Exception as e:
+            print(f"❌ Could not DM user: {e}")
+            
+    except Exception as e:
+        print(f"❌ Error in add_ticket_by_id command: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+        except:
+            print("Failed to send error message to user")
 
 @admin_group.command(name="check_access", description="Check a user's access status")
 async def check_access(interaction: discord.Interaction, user: discord.User):
     try:
+        # DEFER THE RESPONSE IMMEDIATELY
+        await interaction.response.defer(ephemeral=True)
+        
         user_data = db.get_user(user.id)
         access_control = AccessControl(db)
         
@@ -640,40 +715,59 @@ async def check_access(interaction: discord.Interaction, user: discord.User):
         else:
             embed.add_field(name="Admin", value="❌ No", inline=True)
         
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         
     except Exception as e:
         print(f"❌ Error in check_access command: {e}")
-        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+        try:
+            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+        except:
+            print("Failed to send error message to user")
 
-@bot.tree.command(name="admin_test", description="Test if you have admin access")
-async def admin_test(interaction: discord.Interaction):
+@admin_group.command(name="list_members", description="List server members (for debugging)")
+async def list_members(interaction: discord.Interaction):
     try:
-        user_data = db.get_user(interaction.user.id)
-        is_admin = user_data.get('is_admin') or interaction.user.id in config.PREMIUM_SETTINGS["admin_ids"]
+        # DEFER THE RESPONSE IMMEDIATELY
+        await interaction.response.defer(ephemeral=True)
         
-        if is_admin:
-            await interaction.response.send_message("✅ You have admin access!", ephemeral=True)
+        if interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
+            await interaction.followup.send("❌ Admin only command.", ephemeral=True)
+            return
+        
+        # Get the guild (server)
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
+            return
+        
+        # Fetch all members
+        members = []
+        async for member in guild.fetch_members(limit=100):
+            members.append(f"{member.name} ({member.id})")
+        
+        # Send in chunks if too many
+        if len(members) > 0:
+            chunk_size = 20
+            for i in range(0, len(members), chunk_size):
+                chunk = members[i:i + chunk_size]
+                embed = discord.Embed(
+                    title=f"Server Members ({i+1}-{min(i+chunk_size, len(members))}/{len(members)})",
+                    description="\n".join(chunk),
+                    color=discord.Color.blue()
+                )
+                if i == 0:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
         else:
-            await interaction.response.send_message("❌ You do NOT have admin access!", ephemeral=True)
+            await interaction.followup.send("❌ No members found.", ephemeral=True)
             
     except Exception as e:
-        print(f"❌ Error in admin_test command: {e}")
-        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
-
-@bot.tree.command(name="debug_commands", description="List all available commands")
-async def debug_commands(interaction: discord.Interaction):
-    if interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
-        await interaction.response.send_message("❌ Admin only command.", ephemeral=True)
-        return
-    
-    try:
-        commands = await bot.tree.fetch_commands()
-        command_list = "\n".join([f"/{cmd.name}" for cmd in commands])
-        await interaction.response.send_message(f"Available commands:\n{command_list}", ephemeral=True)
-    except Exception as e:
-        print(f"❌ Error in debug_commands: {e}")
-        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+        print(f"❌ Error in list_members: {e}")
+        try:
+            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+        except:
+            print("Failed to send error message to user")
 
 # Register the admin group with the bot
 bot.tree.add_command(admin_group)
@@ -681,6 +775,7 @@ bot.tree.add_command(admin_group)
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
 
 
 
