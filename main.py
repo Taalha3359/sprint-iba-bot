@@ -45,19 +45,19 @@ admin_group = app_commands.Group(name="admin", description="Admin management com
 async def on_ready():
     print(f'{bot.user} is now online!')
     
-    # MongoDB handles premium expiration per-user, not in bulk
-    print("✅ MongoDB Atlas connected successfully")
+    # Test MongoDB connection
+    try:
+        # Simple test query
+        test_user = db.get_user(12345)  # Test with dummy ID
+        print("✅ MongoDB connection test successful")
+    except Exception as e:
+        print(f"❌ MongoDB connection failed: {e}")
     
     try:
         # Sync commands globally
         synced = await bot.tree.sync()
         print(f"✅ Loaded {len(synced)} commands")
         
-        # Debug: List all commands
-        commands = await bot.tree.fetch_commands()
-        for cmd in commands:
-            print(f"Command: /{cmd.name}")
-            
     except Exception as e:
         print(f"❌ Error syncing commands: {e}")
         import traceback
@@ -504,16 +504,15 @@ async def question_timeout(user_id, timeout):
 
 @bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
 async def my_status(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    
-    # 🔥 CRITICAL FIX: Force refresh user data from database
-    # This ensures we get the most current data
-    user_data = db._read_data().get(str(user_id), {})
-    
-    # If user doesn't exist in database, create them
-    if not user_data:
-        user_data = db.create_user(user_id)
-    else:
+    try:
+        # DEFER THE RESPONSE IMMEDIATELY
+        await interaction.response.defer(ephemeral=True)
+        
+        user_id = interaction.user.id
+        
+        # 🔥 FIXED: Use MongoDB method, not _read_data()
+        user_data = db.get_user(user_id)
+        
         # Refresh premium status
         if user_data.get('premium_until'):
             try:
@@ -526,35 +525,44 @@ async def my_status(interaction: discord.Interaction):
                 user_data['premium_access'] = False
                 user_data['premium_until'] = None
                 db.update_user(user_id, user_data)
-    
-    embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
-    
-    # Premium status
-    if user_data.get('premium_access') and user_data.get('premium_until'):
+        
+        embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
+        
+        # Premium status
+        if user_data.get('premium_access') and user_data.get('premium_until'):
+            try:
+                premium_until = datetime.fromisoformat(user_data['premium_until'])
+                embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d %H:%M')}", inline=False)
+            except:
+                embed.add_field(name="Premium Access", value="✅ Active (invalid date format)", inline=False)
+        else:
+            embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
+        
+        # Question usage
+        questions_answered = user_data.get('questions_answered', 0)
+        free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
+        remaining = max(0, free_limit - questions_answered)
+        
+        embed.add_field(
+            name="Question Usage", 
+            value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}\n**Free limit:** {free_limit}", 
+            inline=False
+        )
+        
+        # Admin status
+        if user_data.get('is_admin') or user_id in config.PREMIUM_SETTINGS["admin_ids"]:
+            embed.add_field(name="Admin Status", value="✅ You have admin privileges", inline=False)
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"❌ Error in mystatus command: {e}")
+        import traceback
+        traceback.print_exc()
         try:
-            premium_until = datetime.fromisoformat(user_data['premium_until'])
-            embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d %H:%M')}", inline=False)
+            await interaction.followup.send("❌ Error loading your status. Please try again.", ephemeral=True)
         except:
-            embed.add_field(name="Premium Access", value="✅ Active (invalid date format)", inline=False)
-    else:
-        embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
-    
-    # Question usage - FIXED: Use the refreshed data
-    questions_answered = user_data.get('questions_answered', 0)
-    free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
-    remaining = max(0, free_limit - questions_answered)
-    
-    embed.add_field(
-        name="Question Usage", 
-        value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}\n**Free limit:** {free_limit}", 
-        inline=False
-    )
-    
-    # Admin status
-    if user_data.get('is_admin') or user_id in config.PREMIUM_SETTINGS["admin_ids"]:
-        embed.add_field(name="Admin Status", value="✅ You have admin privileges", inline=False)
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+            print("Failed to send error message to user")
 
 # ADMIN COMMANDS
 @admin_group.command(name="add_ticket", description="Add premium access to a user")
@@ -775,6 +783,7 @@ bot.tree.add_command(admin_group)
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
 
 
 
