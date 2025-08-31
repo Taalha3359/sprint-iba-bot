@@ -54,6 +54,11 @@ class AccessControl:
         free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
         return max(0, free_limit - questions_answered)
     
+    # ADD THIS NEW METHOD
+    def increment_question_count(self, user_id):
+        """Increment the user's question count"""
+        return self.db.increment_questions_answered(user_id)
+    
     async def send_access_denied_message(self, interaction, access_type):
         if access_type == "no_premium_in_channel":
             embed = discord.Embed(
@@ -65,6 +70,7 @@ class AccessControl:
             await interaction.response.send_message(embed=embed, ephemeral=True)
         
         elif access_type == "limit_reached":
+            remaining = self.get_remaining_questions(interaction.user.id)
             embed = discord.Embed(
                 title="🎯 Free Limit Reached",
                 description=f"You've used all {config.PREMIUM_SETTINGS['free_question_limit']} free questions!\n\n"
