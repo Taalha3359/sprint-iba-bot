@@ -211,11 +211,13 @@ async def on_app_command_completion(interaction: discord.Interaction, command: a
 
 @bot.tree.command(name="math_practice", description="Practice math questions")
 @app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.MATH_TOPICS])
-print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
 async def math_practice(interaction: discord.Interaction, topic: app_commands.Choice[str]):
     """Handle math practice command with proper error handling"""
     try:
         user_id = interaction.user.id
+        subject = "math"
+        
+print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
         
         # Defer the response first to prevent interaction timeout
         if not interaction.response.is_done():
@@ -313,11 +315,13 @@ async def math_practice(interaction: discord.Interaction, topic: app_commands.Ch
 
 @bot.tree.command(name="english_practice", description="Practice English questions")
 @app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.ENGLISH_TOPICS])
-print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
 async def english_practice(interaction: discord.Interaction, topic: app_commands.Choice[str]):
     """Handle English practice command with proper error handling"""
     try:
         user_id = interaction.user.id
+        subject = "english"
+        
+print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
         
         # Defer the response first to prevent interaction timeout
         if not interaction.response.is_done():
@@ -414,11 +418,13 @@ async def english_practice(interaction: discord.Interaction, topic: app_commands
 
 @bot.tree.command(name="analytical_practice", description="Practice analytical questions")
 @app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.ANALYTICAL_TOPICS])
-print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
 async def analytical_practice(interaction: discord.Interaction, topic: app_commands.Choice[str]):
     """Handle analytical practice command with proper error handling"""
     try:
         user_id = interaction.user.id
+        subject = "analytical"
+        
+print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
         
         # Defer the response first to prevent interaction timeout
         if not interaction.response.is_done():
@@ -899,6 +905,7 @@ async def on_app_command_error(interaction, error):
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
 
 
 
