@@ -18,11 +18,14 @@ class MongoDB:
         self.users = self.db.users
         self.leaderboard = self.db.leaderboard
         
-        # Create indexes in the background
-        asyncio.create_task(self._create_indexes())
+        # Don't create indexes immediately - we'll do it on first connection
+        self.indexes_created = False
     
-    async def _create_indexes(self):
-        """Create indexes for better query performance"""
+    async def ensure_indexes(self):
+        """Ensure indexes are created (call this on startup)"""
+        if self.indexes_created:
+            return
+            
         try:
             # Try to create indexes, but don't fail if we don't have permissions
             try:
@@ -34,11 +37,17 @@ class MongoDB:
             except Exception as e:
                 # If we can't create indexes (due to auth), just continue
                 print(f"⚠️  Could not create indexes (may need admin permissions): {e}")
+            
+            self.indexes_created = True
         except Exception as e:
             print(f"❌ Error in index creation: {e}")
     
     async def get_user(self, user_id):
         """Get user data from MongoDB"""
+        # Ensure indexes are created on first access
+        if not self.indexes_created:
+            await self.ensure_indexes()
+            
         user_data = await self.users.find_one({'_id': str(user_id)})
         if not user_data:
             # Create default user if not exists
@@ -230,38 +239,3 @@ class MongoDB:
 class UserDatabase(MongoDB):
     """Legacy class name for backward compatibility"""
     pass
-
-# Async helper functions
-import asyncio
-
-async def test_connection():
-    """Test MongoDB connection"""
-    db = MongoDB()
-    try:
-        # Test connection
-        await db.client.admin.command('ping')
-        print("✅ MongoDB connection successful")
-        
-        # Test basic operations
-        test_user_id = "test_user_123"
-        user_data = await db.get_user(test_user_id)
-        print(f"✅ User retrieval test passed: {user_data['_id']}")
-        
-        await db.update_user(test_user_id, {'test_field': 'test_value'})
-        print("✅ User update test passed")
-        
-        await db.increment_questions_answered(test_user_id)
-        print("✅ Question increment test passed")
-        
-        # Clean up test data
-        await db.users.delete_one({'_id': test_user_id})
-        print("✅ Test cleanup completed")
-        
-    except Exception as e:
-        print(f"❌ MongoDB connection failed: {e}")
-
-if __name__ == "__main__":
-    # Run connection test
-    asyncio.run(test_connection())
-
-
