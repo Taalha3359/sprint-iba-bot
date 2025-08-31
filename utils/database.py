@@ -66,20 +66,20 @@ class UserDatabase:
         self._write_data(data)
     
     def increment_questions_answered(self, user_id):
-    data = self._read_data()
-    user_id_str = str(user_id)
-    
-    if user_id_str not in data:
-        data[user_id_str] = {}
-    
-    user_data = data[user_id_str]
-    current_count = user_data.get('questions_answered', 0)
-    user_data['questions_answered'] = current_count + 1
-    
-    print(f"📊 DEBUG: User {user_id} questions answered: {current_count} -> {user_data['questions_answered']}")
-    
-    self._write_data(data)
-    return user_data['questions_answered']
+        data = self._read_data()
+        user_id_str = str(user_id)
+        
+        if user_id_str not in data:
+            data[user_id_str] = {}
+        
+        user_data = data[user_id_str]
+        current_count = user_data.get('questions_answered', 0)
+        user_data['questions_answered'] = current_count + 1
+        
+        print(f"📊 DEBUG: User {user_id} questions answered: {current_count} -> {user_data['questions_answered']}")
+        
+        self._write_data(data)
+        return user_data['questions_answered']
     
     def add_premium_access(self, user_id, days):
         user_data = self.get_user(user_id)
@@ -102,11 +102,11 @@ class UserDatabase:
                 user_data['premium_access'] = False
                 user_data['premium_until'] = None
                 self.update_user(user_id, user_data)
-        return user_data['premium_access']
+                return False
+            return True
+        return False
     
     def set_admin(self, user_id, is_admin):
         user_data = self.get_user(user_id)
         user_data['is_admin'] = is_admin
         self.update_user(user_id, user_data)
-
-
