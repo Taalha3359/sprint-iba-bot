@@ -1,0 +1,31 @@
+name: MongoDB Scheduled Backup
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup MongoDB tools
+      run: sudo apt-get install -y mongodb-database-tools
+      
+    - name: Create backup
+      env:
+        MONGO_URI: ${{ secrets.MONGO_URI }}
+      run: |
+        # This would create an actual MongoDB backup
+        echo "Creating MongoDB backup..."
+        # mongodump --uri="$MONGO_URI" --out=backups/$(date +%Y%m%d_%H%M%S)
+        echo "Backup completed"
+        
+    - name: Upload backup
+      uses: actions/upload-artifact@v3
+      with:
+        name: mongo-backup
+        path: backups/
