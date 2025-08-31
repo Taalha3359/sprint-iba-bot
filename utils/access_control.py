@@ -60,6 +60,7 @@ class AccessControl:
         return self.db.increment_questions_answered(user_id)
     
     async def send_access_denied_message(self, interaction, access_type):
+    try:
         if access_type == "no_premium_in_channel":
             embed = discord.Embed(
                 title="🚫 Premium Access Required",
@@ -67,10 +68,10 @@ class AccessControl:
                           f"Please ask an admin for a ticket to access premium features.",
                 color=discord.Color.red()
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            # Use followup instead of response
+            await interaction.followup.send(embed=embed, ephemeral=True)
         
         elif access_type == "limit_reached":
-            remaining = self.get_remaining_questions(interaction.user.id)
             embed = discord.Embed(
                 title="🎯 Free Limit Reached",
                 description=f"You've used all {config.PREMIUM_SETTINGS['free_question_limit']} free questions!\n\n"
@@ -79,6 +80,13 @@ class AccessControl:
                           f"• Ask an admin for a trial ticket",
                 color=discord.Color.orange()
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            # Use followup instead of response
+            await interaction.followup.send(embed=embed, ephemeral=True)
         
+        return False
+    except discord.errors.NotFound:
+        # Interaction already expired, ignore
+        return False
+    except Exception as e:
+        print(f"Error in send_access_denied_message: {e}")
         return False
