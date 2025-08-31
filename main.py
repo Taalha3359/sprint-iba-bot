@@ -12,6 +12,15 @@ from utils.database import UserDatabase
 from utils.question_manager import QuestionManager
 from utils.leaderboard import Leaderboard
 from utils.access_control import AccessControl
+from pymongo import MongoClient
+
+# Your connection string from GitHub Secrets
+MONGODB_URI = os.getenv('MONGODB_URI')
+
+# Connect to MongoDB
+client = MongoClient(MONGODB_URI)
+db = client.sprint_bot  # Your database name
+users = db.users        # Your collection name
 
 # Setup bot
 intents = discord.Intents.default()
@@ -680,3 +689,4 @@ bot.tree.add_command(admin_group)
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
