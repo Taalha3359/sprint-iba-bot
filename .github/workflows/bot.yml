@@ -4,10 +4,13 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+  schedule:
+    - cron: '0 */5 * * *'  # Restart every 5 hours (before 6-hour limit)
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 350  # 5 hours 50 minutes (just under 6 hours)
     
     steps:
     - name: Checkout code
@@ -24,4 +27,11 @@ jobs:
     - name: Run Discord Bot
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-      run: python main.py
+      run: |
+        # Add automatic restart wrapper
+        while true; do
+          echo "Starting bot at $(date)"
+          python main.py
+          echo "Bot stopped or crashed at $(date), restarting in 10 seconds..."
+          sleep 10
+        done
