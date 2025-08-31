@@ -124,14 +124,9 @@ jobs:
         
         async def test_mongo_connection():
             try:
-                # Test connection without authentication first
-                client = AsyncIOMotorClient('mongodb://localhost:27017')
-                await client.admin.command('ping')
-                print('✅ MongoDB connection successful (no auth)')
-                
                 # Test connection with authentication
-                client_auth = AsyncIOMotorClient('mongodb://admin:password@localhost:27017')
-                await client_auth.admin.command('ping')
+                client = AsyncIOMotorClient('mongodb://admin:password@localhost:27017/discord_bot_test')
+                await client.admin.command('ping')
                 print('✅ MongoDB authentication successful')
                 
                 return True
@@ -142,7 +137,7 @@ jobs:
         async def test_mongo_operations():
             try:
                 # Use authenticated connection
-                client = AsyncIOMotorClient('mongodb://admin:password@localhost:27017')
+                client = AsyncIOMotorClient('mongodb://admin:password@localhost:27017/discord_bot_test')
                 db = client.discord_bot_test
                 users = db.users
                 
