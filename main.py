@@ -7,7 +7,6 @@ import random
 import json
 from datetime import datetime, timedelta
 
-
 import config
 from utils.database import UserDatabase
 from utils.question_manager import QuestionManager
@@ -30,6 +29,9 @@ access_control = AccessControl(db)
 # Store active questions
 active_questions = {}
 
+# Admin commands group
+admin_group = app_commands.Group(name="admin", description="Admin management commands")
+
 @bot.event
 async def on_ready():
     print(f'{bot.user} is now online!')
@@ -46,10 +48,19 @@ async def on_ready():
                 print(f"Expired premium access for user {user_id}")
     
     try:
+        # Sync commands globally
         synced = await bot.tree.sync()
-        print(f"Loaded {len(synced)} commands")
+        print(f"✅ Loaded {len(synced)} commands")
+        
+        # Debug: List all commands
+        commands = await bot.tree.fetch_commands()
+        for cmd in commands:
+            print(f"Command: /{cmd.name}")
+            
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Error syncing commands: {e}")
+        import traceback
+        traceback.print_exc()
 
 @bot.tree.command(name="math_practice", description="Practice math questions")
 @app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.MATH_TOPICS])
@@ -385,6 +396,146 @@ async def profile(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
+@admin_group.command(name="add_ticket", description="Add premium access to a user")
+@app_commands.choices(duration=[
+    app_commands.Choice(name="7 Days", value="7days"),
+    app_commands.Choice(name="14 Days", value="14days"),
+    app_commands.Choice(name="1 Month", value="1month"),
+    app_commands.Choice(name="3 Months", value="3months")
+])
+async def add_ticket(interaction: discord.Interaction, user: discord.User, duration: app_commands.Choice[str]):
+    try:
+        print(f"🎫 Admin command received from {interaction.user.id} for user {user.id}")
+        
+        # Check if user is admin
+        user_data = db.get_user(interaction.user.id)
+        is_admin = user_data.get('is_admin') or interaction.user.id in config.PREMIUM_SETTINGS["admin_ids"]
+        
+        print(f"🔍 Admin check: User {interaction.user.id}, is_admin: {is_admin}")
+        print(f"🔍 Admin IDs in config: {config.PREMIUM_SETTINGS['admin_ids']}")
+        
+        if not is_admin:
+            await interaction.response.send_message("❌ Admin access required.", ephemeral=True)
+            return
+        
+        # Add premium access
+        days = config.PREMIUM_SETTINGS["ticket_durations"][duration.value]
+        print(f"📅 Adding {days} days premium for user {user.id}")
+        
+        premium_until = db.add_premium_access(user.id, days)
+        
+        embed = discord.Embed(
+            title="✅ Ticket Added",
+            description=f"Premium access granted to {user.mention}\n"
+                      f"**Duration:** {duration.name}\n"
+                      f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}",
+            color=discord.Color.green()
+        )
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Notify the user
+        try:
+            user_embed = discord.Embed(
+                title="🎉 Premium Access Granted!",
+                description=f"You've received {duration.name} of premium access!\n"
+                          f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}\n\n"
+                          f"You can now use the bot without limits in our premium channel.",
+                color=discord.Color.gold()
+            )
+            await user.send(embed=user_embed)
+        except Exception as e:
+            print(f"❌ Could not DM user: {e}")
+            
+    except Exception as e:
+        print(f"❌ Error in add_ticket command: {e}")
+        import traceback
+        traceback.print_exc()
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+@admin_group.command(name="check_access", description="Check a user's access status")
+async def check_access(interaction: discord.Interaction, user: discord.User):
+    try:
+        user_data = db.get_user(user.id)
+        access_control = AccessControl(db)
+        
+        embed = discord.Embed(title=f"Access Status: {user.display_name}", color=discord.Color.blue())
+        
+        # Premium status
+        if user_data.get('premium_access'):
+            premium_until = datetime.fromisoformat(user_data['premium_until'])
+            embed.add_field(name="Premium Status", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d')}", inline=False)
+        else:
+            embed.add_field(name="Premium Status", value="❌ No active subscription", inline=False)
+        
+        # Question usage
+        questions_answered = user_data.get('questions_answered', 0)
+        remaining = access_control.get_remaining_questions(user.id)
+        embed.add_field(name="Question Usage", value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}", inline=False)
+        
+        # Admin status
+        if user_data.get('is_admin') or user.id in config.PREMIUM_SETTINGS["admin_ids"]:
+            embed.add_field(name="Admin", value="✅ Yes", inline=True)
+        else:
+            embed.add_field(name="Admin", value="❌ No", inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"❌ Error in check_access command: {e}")
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="admin_test", description="Test if you have admin access")
+async def admin_test(interaction: discord.Interaction):
+    try:
+        user_data = db.get_user(interaction.user.id)
+        is_admin = user_data.get('is_admin') or interaction.user.id in config.PREMIUM_SETTINGS["admin_ids"]
+        
+        if is_admin:
+            await interaction.response.send_message("✅ You have admin access!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ You do NOT have admin access!", ephemeral=True)
+            
+    except Exception as e:
+        print(f"❌ Error in admin_test command: {e}")
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="debug_commands", description="List all available commands")
+async def debug_commands(interaction: discord.Interaction):
+    if interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
+        await interaction.response.send_message("❌ Admin only command.", ephemeral=True)
+        return
+    
+    try:
+        commands = await bot.tree.fetch_commands()
+        command_list = "\n".join([f"/{cmd.name}" for cmd in commands])
+        await interaction.response.send_message(f"Available commands:\n{command_list}", ephemeral=True)
+    except Exception as e:
+        print(f"❌ Error in debug_commands: {e}")
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="debug_questions", description="Debug question counter")
+async def debug_questions(interaction: discord.Interaction):
+    if interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
+        await interaction.response.send_message("❌ Admin only command.", ephemeral=True)
+        return
+    
+    try:
+        user_id = interaction.user.id
+        user_data = db.get_user(user_id)
+        
+        debug_info = f"""
+        User ID: {user_id}
+        questions_answered: {user_data.get('questions_answered', 0)}
+        Raw data: {user_data}
+        """
+        
+        await interaction.response.send_message(f"```{debug_info}```", ephemeral=True)
+    except Exception as e:
+        print(f"❌ Error in debug_questions: {e}")
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+        
+
 class QuestionView(discord.ui.View):
     def __init__(self, question_data, subject, user_id):
         # Set timeout based on subject
@@ -642,6 +793,7 @@ async def debug_questions(interaction: discord.Interaction):
 if __name__ == "__main__":
 
     bot.run(config.BOT_TOKEN)
+
 
 
 
