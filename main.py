@@ -404,29 +404,46 @@ async def my_status(interaction: discord.Interaction):
     user_id = interaction.user.id
     user_data = db.get_user(user_id)
     
+    # Refresh premium status check
+    access_control = AccessControl(db)
+    access_control._check_premium_status(user_id)
+    user_data = db.get_user(user_id)  # Get updated data
+    
     embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
     
     # Premium status
     if user_data.get('premium_access') and user_data.get('premium_until'):
         try:
             premium_until = datetime.fromisoformat(user_data['premium_until'])
-            embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d')}", inline=False)
+            embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d %H:%M')}", inline=False)
         except:
             embed.add_field(name="Premium Access", value="✅ Active (invalid date format)", inline=False)
     else:
         embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
     
-    # Question usage
+    # Question usage - ALWAYS show real-time count
     questions_answered = user_data.get('questions_answered', 0)
-    remaining = max(0, config.PREMIUM_SETTINGS["free_question_limit"] - questions_answered)
-    embed.add_field(name="Question Usage", value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}", inline=False)
+    free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
+    remaining = max(0, free_limit - questions_answered)
+    
+    embed.add_field(
+        name="Question Usage", 
+        value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}\n**Free limit:** {free_limit}", 
+        inline=False
+    )
     
     # Admin status
     if user_data.get('is_admin') or user_id in config.PREMIUM_SETTINGS["admin_ids"]:
-        embed.add_field(name="Admin", value="✅ You have admin privileges", inline=False)
+        embed.add_field(name="Admin Status", value="✅ You have admin privileges", inline=False)
+    
+    # Channel info
+    if interaction.channel_id == config.PREMIUM_SETTINGS["premium_channel_id"]:
+        embed.add_field(name="Current Channel", value="🎫 Premium Channel", inline=True)
+    else:
+        embed.add_field(name="Current Channel", value="🔓 Regular Channel", inline=True)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
+    
 # Admin commands group
 @bot.tree.command(name="admin", description="Admin management commands")
 async def admin(interaction: discord.Interaction):
@@ -508,6 +525,7 @@ async def check_access(interaction: discord.Interaction, user: discord.User):
 if __name__ == "__main__":
 
     bot.run(config.BOT_TOKEN)
+
 
 
 
