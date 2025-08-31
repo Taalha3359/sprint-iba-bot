@@ -344,6 +344,8 @@ class QuestionButton(discord.ui.Button):
         subject = question_data['subject']
         topic = question_data['topic']
         
+        db.increment_questions_answered(user_id)
+        
         subject_data = user_data.get(subject, {})
         subject_data['total'] = subject_data.get('total', 0) + 1
         
@@ -506,6 +508,7 @@ async def check_access(interaction: discord.Interaction, user: discord.User):
 if __name__ == "__main__":
 
     bot.run(config.BOT_TOKEN)
+
 
 
 
