@@ -9,7 +9,6 @@ on:
 
 env:
   PYTHON_VERSION: '3.9'
-  MONGO_VERSION: '5.0'
 
 jobs:
   setup-and-test:
@@ -85,9 +84,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-        env:
-          MONGO_INITDB_ROOT_USERNAME: admin
-          MONGO_INITDB_ROOT_PASSWORD: password
     
     steps:
     - name: Checkout code
@@ -124,11 +120,10 @@ jobs:
         
         async def test_mongo_connection():
             try:
-                # Test connection with authentication
-                client = AsyncIOMotorClient('mongodb://admin:password@localhost:27017/discord_bot_test')
+                # Test connection without authentication
+                client = AsyncIOMotorClient('mongodb://localhost:27017')
                 await client.admin.command('ping')
-                print('✅ MongoDB authentication successful')
-                
+                print('✅ MongoDB connection successful')
                 return True
             except Exception as e:
                 print(f'❌ MongoDB connection failed: {e}')
@@ -136,8 +131,8 @@ jobs:
         
         async def test_mongo_operations():
             try:
-                # Use authenticated connection
-                client = AsyncIOMotorClient('mongodb://admin:password@localhost:27017/discord_bot_test')
+                # Use connection without authentication
+                client = AsyncIOMotorClient('mongodb://localhost:27017')
                 db = client.discord_bot_test
                 users = db.users
                 
@@ -210,7 +205,7 @@ jobs:
     - name: Run Discord Bot with MongoDB
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        MONGO_URI: "mongodb://admin:password@localhost:27017/discord_bot"
+        MONGO_URI: "mongodb://localhost:27017/discord_bot"
       run: |
         echo "=== Starting Discord Bot with MongoDB ==="
         echo "Python version: $(python --version)"
@@ -230,7 +225,7 @@ jobs:
           if [ $EXIT_CODE -eq 0 ]; then
             echo "=== Bot stopped normally with exit code $EXIT_CODE at $(date) ==="
             break
-          else:
+          else
             echo "=== Bot stopped with exit code $EXIT_CODE at $(date) ==="
             
             RESTART_COUNT=$((RESTART_COUNT + 1))
