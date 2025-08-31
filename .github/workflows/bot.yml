@@ -22,11 +22,15 @@ jobs:
         python-version: '3.9'
         
     - name: Install dependencies
-      run: pip install discord.py python-dotenv
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pymongo>=4.0.0  # Explicitly install pymongo
         
     - name: Run Discord Bot
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        MONGODB_URI: ${{ secrets.MONGODB_URI }}  # ADD THIS LINE
       run: |
         # Add automatic restart wrapper
         while true; do
