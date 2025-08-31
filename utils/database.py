@@ -3,6 +3,11 @@ from pymongo import MongoClient
 from datetime import datetime, timedelta
 import json
 
+import os
+from pymongo import MongoClient
+from datetime import datetime, timedelta
+import ssl  # ADD THIS IMPORT
+
 class UserDatabase:
     def __init__(self):
         # Get connection string from environment variable
@@ -10,27 +15,66 @@ class UserDatabase:
         if not self.connection_string:
             raise ValueError("MONGODB_URI environment variable is not set")
         
-        # ADD PROPER TIMEOUT PARAMETERS - THIS IS CRITICAL
-        if "?" in self.connection_string:
-            self.connection_string += "&connectTimeoutMS=10000&socketTimeoutMS=10000&serverSelectionTimeoutMS=10000"
-        else:
-            self.connection_string += "?connectTimeoutMS=10000&socketTimeoutMS=10000&serverSelectionTimeoutMS=10000"
+        # ADD TLS/SSL FIX - Remove existing timeout parameters first
+        # Clean the connection string
+        if "connectTimeoutMS" in self.connection_string:
+            # Remove existing timeout parameters
+            import re
+            self.connection_string = re.sub(r'&?connectTimeoutMS=\d+', '', self.connection_string)
+            self.connection_string = re.sub(r'&?socketTimeoutMS=\d+', '', self.connection_string)
+            self.connection_string = re.sub(r'&?serverSelectionTimeoutMS=\d+', '', self.connection_string)
         
-        print(f"Connecting with: {self.connection_string.split('@')[1] if '@' in self.connection_string else self.connection_string}")
+        # Add TLS/SSL configuration
+        tls_params = "&tls=true&tlsAllowInvalidCertificates=false"
+        if "?" in self.connection_string:
+            self.connection_string += f"&connectTimeoutMS=10000&socketTimeoutMS=10000&serverSelectionTimeoutMS=10000{tls_params}"
+        else:
+            self.connection_string += f"?connectTimeoutMS=10000&socketTimeoutMS=10000&serverSelectionTimeoutMS=10000{tls_params}"
+        
+        print(f"Connecting to MongoDB with TLS...")
         
         try:
-            self.client = MongoClient(self.connection_string, serverSelectionTimeoutMS=10000)
+            # Connect with SSL/TLS configuration
+            self.client = MongoClient(
+                self.connection_string,
+                ssl=True,
+                ssl_cert_reqs=ssl.CERT_NONE,  # This might be needed for GitHub Actions
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000
+            )
+            
             # Test connection immediately
             self.client.admin.command('ping')
             self.db = self.client.sprint_bot
             self.users = self.db.users
-            print("✅ Successfully connected to MongoDB Atlas")
+            print("✅ Successfully connected to MongoDB Atlas with TLS")
+            
         except Exception as e:
             print(f"❌ MongoDB connection failed: {e}")
-            # Fallback to in-memory storage if MongoDB fails
-            self.fallback_mode = True
-            self.fallback_data = {}
-            print("🔄 Using fallback in-memory storage")
+            # Try alternative connection without SSL
+            try:
+                print("🔄 Trying connection without SSL...")
+                # Remove SSL requirements from connection string
+                alt_connection_string = self.connection_string.replace("&tls=true", "").replace("tls=true", "")
+                self.client = MongoClient(
+                    alt_connection_string,
+                    ssl=False,  # Disable SSL
+                    serverSelectionTimeoutMS=10000,
+                    connectTimeoutMS=10000,
+                    socketTimeoutMS=10000
+                )
+                self.client.admin.command('ping')
+                self.db = self.client.sprint_bot
+                self.users = self.db.users
+                print("✅ Connected to MongoDB without SSL")
+                
+            except Exception as alt_e:
+                print(f"❌ Both connection attempts failed: {alt_e}")
+                # Fallback to in-memory storage
+                self.fallback_mode = True
+                self.fallback_data = {}
+                print("🔄 Using fallback in-memory storage")
     
     def get_user(self, user_id):
         if hasattr(self, 'fallback_mode') and self.fallback_mode:
@@ -190,6 +234,7 @@ class UserDatabase:
                 'english': {'correct': 0, 'total': 0, 'topics': {}},
                 'analytical': {'correct': 0, 'total': 0, 'topics': {}}
             }
+
 
 
 
