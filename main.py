@@ -96,17 +96,27 @@ async def send_question_response(interaction, question_data, subject, topic, use
         file = discord.File(question_data['image_path'], filename="question.png")
         embed.set_image(url="attachment://question.png")
     
-    view = QuestionView(question_data, subject, user_id, time_limit)
+    view = QuestionView(question_data, subject, topic, user_id, time_limit)
     
-    # Send response
+    # Send response - ensure we only respond once
     try:
-        if file:
-            await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
+        if interaction.response.is_done():
+            # If interaction already responded, use followup
+            if file:
+                message = await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=True, wait=True)
+            else:
+                message = await interaction.followup.send(embed=embed, view=view, ephemeral=True, wait=True)
         else:
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            # Use initial response
+            if file:
+                await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
+                message = await interaction.original_response()
+            else:
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                message = await interaction.original_response()
         
         # Store message reference in the view
-        view.message = await interaction.original_response()
+        view.message = message
         
         # Store active question
         active_questions[user_id] = {
@@ -114,13 +124,14 @@ async def send_question_response(interaction, question_data, subject, topic, use
             "subject": subject,
             "topic": topic,
             "view": view,
-            "message": view.message
+            "message": message
         }
         
     except Exception as e:
         print(f"Error sending question: {e}")
         try:
-            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
         except:
             try:
                 await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
@@ -276,19 +287,27 @@ async def profile(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
+# In your main.py, update the QuestionView and QuestionButton classes:
+
 class QuestionView(discord.ui.View):
-    def __init__(self, question_data, subject, user_id, timeout_duration):
+    def __init__(self, question_data, subject, topic, user_id, timeout_duration):
         super().__init__(timeout=timeout_duration)
         self.question_data = question_data
         self.subject = subject
+        self.topic = topic
         self.user_id = user_id
         self.message = None
         self.timed_out = False
+        self.answered = False  # Track if question has been answered
         
+        # Add buttons for options
         for i, option in enumerate(question_data['options']):
-            self.add_item(QuestionButton(option, i, question_data['correct_answer']))
+            self.add_item(QuestionButton(option, i, question_data['correct_answer'], self))
     
     async def on_timeout(self):
+        if self.answered:
+            return
+            
         self.timed_out = True
         # Disable all buttons
         for item in self.children:
@@ -299,90 +318,96 @@ class QuestionView(discord.ui.View):
         if self.message:
             try:
                 await self.message.edit(view=self)
-            except:
-                pass
+            except discord.NotFound:
+                pass  # Message was already deleted
         
         # Handle timeout in database
-        user_data = await db.get_user(self.user_id)
-        subject_data = user_data.get(self.subject, {})
-        subject_data['total'] = subject_data.get('total', 0) + 1
-        subject_data['timeout'] = subject_data.get('timeout', 0) + 1
-        user_data[self.subject] = subject_data
-        await db.update_user(self.user_id, user_data)
+        try:
+            user_data = await db.get_user(self.user_id)
+            subject_data = user_data.get(self.subject, {})
+            subject_data['total'] = subject_data.get('total', 0) + 1
+            subject_data['timeout'] = subject_data.get('timeout', 0) + 1
+            user_data[self.subject] = subject_data
+            await db.update_user(self.user_id, user_data)
+        except Exception as e:
+            print(f"Error handling timeout: {e}")
         
         # Remove from active questions
         if self.user_id in active_questions:
             del active_questions[self.user_id]
 
 class QuestionButton(discord.ui.Button):
-    def __init__(self, option, index, correct_index):
+    def __init__(self, option, index, correct_index, parent_view):
         super().__init__(label=option, style=discord.ButtonStyle.secondary)
         self.index = index
         self.correct_index = correct_index
+        self.parent_view = parent_view
     
     async def callback(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        
-        if user_id not in active_questions:
-            await interaction.response.send_message("Question expired", ephemeral=True)
+        # Only allow the original user to interact
+        if interaction.user.id != self.parent_view.user_id:
+            await interaction.response.send_message("This is not your question!", ephemeral=True)
             return
         
-        # Get question data and view
-        question_data = active_questions[user_id]
-        view = question_data['view']
-        
-        # Prevent multiple interactions
-        if view.timed_out:
-            await interaction.response.send_message("Question already timed out", ephemeral=True)
+        # Prevent multiple answers
+        if self.parent_view.answered:
+            await interaction.response.send_message("You already answered this question!", ephemeral=True)
             return
         
-        # Disable all buttons to prevent further interactions
-        for item in view.children:
+        self.parent_view.answered = True
+        
+        # Disable all buttons
+        for item in self.parent_view.children:
             if isinstance(item, discord.ui.Button):
                 item.disabled = True
         
-        # Update the message
         try:
-            await view.message.edit(view=view)
-        except:
-            pass
+            # Update the message to show it's been answered
+            await interaction.message.edit(view=self.parent_view)
+        except discord.NotFound:
+            pass  # Message was deleted
         
         # Process the answer
-        user_data = await db.get_user(user_id)
-        subject = question_data['subject']
-        
-        # Update question count
-        await db.increment_questions_answered(user_id)
-        
-        subject_data = user_data.get(subject, {})
-        subject_data['total'] = subject_data.get('total', 0) + 1
-        
-        is_correct = self.index == self.correct_index
-        
-        if is_correct:
-            user_data['total_score'] = user_data.get('total_score', 0) + config.SCORING['correct']
-            subject_data['correct'] = subject_data.get('correct', 0) + 1
-            result_text = "Correct! ✅"
-            color = discord.Color.green()
-        else:
-            user_data['total_score'] = user_data.get('total_score', 0) + config.SCORING['incorrect']
-            result_text = f"Incorrect! ❌ Correct answer: {question_data['question']['options'][self.correct_index]}"
-            color = discord.Color.red()
-        
-        user_data[subject] = subject_data
-        await db.update_user(user_id, user_data)
-        await db.update_leaderboard(user_id, user_data['total_score'])
-        
-        # Send result
-        embed = discord.Embed(title=result_text, color=color)
-        embed.add_field(name="Your Answer", value=self.label, inline=True)
-        embed.add_field(name="Score", value=user_data['total_score'], inline=True)
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            user_data = await db.get_user(interaction.user.id)
+            subject = self.parent_view.subject
+            
+            # Update question count
+            await db.increment_questions_answered(interaction.user.id)
+            
+            subject_data = user_data.get(subject, {})
+            subject_data['total'] = subject_data.get('total', 0) + 1
+            
+            is_correct = self.index == self.correct_index
+            
+            if is_correct:
+                user_data['total_score'] = user_data.get('total_score', 0) + config.SCORING['correct']
+                subject_data['correct'] = subject_data.get('correct', 0) + 1
+                result_text = "Correct! ✅"
+                color = discord.Color.green()
+            else:
+                user_data['total_score'] = user_data.get('total_score', 0) + config.SCORING['incorrect']
+                result_text = f"Incorrect! ❌ Correct answer: {self.parent_view.question_data['options'][self.correct_index]}"
+                color = discord.Color.red()
+            
+            user_data[subject] = subject_data
+            await db.update_user(interaction.user.id, user_data)
+            await db.update_leaderboard(interaction.user.id, user_data['total_score'])
+            
+            # Send result
+            embed = discord.Embed(title=result_text, color=color)
+            embed.add_field(name="Your Answer", value=self.label, inline=True)
+            embed.add_field(name="Score", value=user_data['total_score'], inline=True)
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            print(f"Error processing answer: {e}")
+            await interaction.response.send_message("An error occurred while processing your answer.", ephemeral=True)
         
         # Remove from active questions
-        if user_id in active_questions:
-            del active_questions[user_id]
+        if interaction.user.id in active_questions:
+            del active_questions[interaction.user.id]
 
 @bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
 async def my_status(interaction: discord.Interaction):
@@ -553,4 +578,5 @@ async def on_app_command_error(interaction, error):
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
 
