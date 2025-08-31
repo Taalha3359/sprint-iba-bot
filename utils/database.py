@@ -62,6 +62,7 @@ class UserDatabase:
     def update_user(self, user_id, user_data):
         data = self._read_data()
         data[str(user_id)] = user_data
+        print(f"📝 Updating user {user_id}: questions_answered = {user_data.get('questions_answered', 0)}")
         self._write_data(data)
     
     def increment_questions_answered(self, user_id):
@@ -97,3 +98,4 @@ class UserDatabase:
         user_data = self.get_user(user_id)
         user_data['is_admin'] = is_admin
         self.update_user(user_id, user_data)
+
