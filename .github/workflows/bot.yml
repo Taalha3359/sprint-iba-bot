@@ -1,11 +1,11 @@
 name: Run Discord Bot 24/7
 
 on:
-  workflow_dispatch:
-  push:
+  workflow_dispatch:  # Manual trigger
+  push:               # Run on code changes
     branches: [ main ]
-  schedule:
-    - cron: '0 */5 * * *'  # Restart every 5 hours (before 6-hour limit)
+  schedule:           # Restart every 5 hours (before 6-hour limit)
+    - cron: '0 */5 * * *'
 
 jobs:
   run-bot:
@@ -22,7 +22,7 @@ jobs:
         python-version: '3.9'
         
     - name: Install dependencies
-      run: pip install discord.py
+      run: pip install discord.py python-dotenv
         
     - name: Run Discord Bot
       env:
@@ -30,8 +30,16 @@ jobs:
       run: |
         # Add automatic restart wrapper
         while true; do
-          echo "Starting bot at $(date)"
+          echo "=== Starting bot at $(date) ==="
           python main.py
-          echo "Bot stopped or crashed at $(date), restarting in 10 seconds..."
-          sleep 10
+          EXIT_CODE=$?
+          echo "=== Bot stopped with exit code $EXIT_CODE at $(date) ==="
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "Bot stopped normally, not restarting."
+            break
+          else
+            echo "Bot crashed or was stopped, restarting in 10 seconds..."
+            sleep 10
+          fi
         done
