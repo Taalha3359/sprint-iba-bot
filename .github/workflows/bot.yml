@@ -21,7 +21,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
       
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
+    - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
@@ -29,7 +29,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install discord.py motor python-dotenv pymongo aiohttp
         pip install pytest pytest-asyncio
         
     - name: Run configuration validation
@@ -74,7 +74,7 @@ jobs:
     
     services:
       mongodb:
-        image: ${{ env.DOCKER_MONGO_IMAGE }}
+        image: mongo:5.0
         ports:
           - 27017:27017
         options: >-
@@ -90,7 +90,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
       
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
+    - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
@@ -98,7 +98,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install discord.py motor python-dotenv pymongo aiohttp
         
     - name: Wait for MongoDB to be ready
       run: |
@@ -107,8 +107,6 @@ jobs:
         echo "MongoDB is ready!"
         
     - name: Test MongoDB connection
-      env:
-        MONGO_URI: "mongodb://admin:password@localhost:27017"
       run: |
         python -c "
         import asyncio
@@ -172,28 +170,24 @@ jobs:
           echo "=== Starting bot (attempt $((RESTART_COUNT + 1))/$((MAX_RESTARTS + 1))) at $(date) ==="
           
           # Run the bot with improved error handling
-          if python main.py; then
-            EXIT_CODE=$?
+          python main.py
+          EXIT_CODE=$?
+          
+          if [ $EXIT_CODE -eq 0 ]; then
             echo "=== Bot stopped normally with exit code $EXIT_CODE at $(date) ==="
             break
           else
-            EXIT_CODE=$?
             echo "=== Bot stopped with exit code $EXIT_CODE at $(date) ==="
             
-            if [ $EXIT_CODE -eq 0 ]; then
-              echo "Bot stopped normally, not restarting."
-              break
-            else
-              RESTART_COUNT=$((RESTART_COUNT + 1))
-              
-              if [ $RESTART_COUNT -gt $MAX_RESTARTS ]; then
-                echo "Maximum restart attempts ($MAX_RESTARTS) reached. Not restarting."
-                exit 1
-              fi
-              
-              echo "Bot crashed or was stopped, restarting in 10 seconds..."
-              sleep 10
+            RESTART_COUNT=$((RESTART_COUNT + 1))
+            
+            if [ $RESTART_COUNT -gt $MAX_RESTARTS ]; then
+              echo "Maximum restart attempts ($MAX_RESTARTS) reached. Not restarting."
+              exit 1
             fi
+            
+            echo "Bot crashed or was stopped, restarting in 10 seconds..."
+            sleep 10
           fi
         done
 
@@ -207,7 +201,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
       
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
+    - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
@@ -215,7 +209,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install discord.py motor python-dotenv pymongo aiohttp
         
     - name: Create production deployment package
       run: |
@@ -257,42 +251,3 @@ jobs:
       run: |
         echo "Monitoring step would check external services here"
         echo "Bot execution completed successfully"
-
-  database-backup:
-    runs-on: ubuntu-latest
-    if: always()
-    timeout-minutes: 15
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      
-    - name: Setup MongoDB tools
-      run: |
-        sudo apt-get install -y mongodb-database-tools
-        
-    - name: Create database backup
-      env:
-        MONGO_URI: "mongodb://admin:password@localhost:27017"
-      run: |
-        # This would normally connect to your production MongoDB
-        # and create a backup, but for GitHub Actions we'll simulate it
-        timestamp=$(date +%Y%m%d_%H%M%S)
-        backup_file="backup_${timestamp}.json"
-        
-        echo "Simulating database backup to $backup_file"
-        echo '{"backup_time": "'$(date)'", "status": "simulated"}' > $backup_file
-        
-        # Upload backup artifact
-        mkdir -p backups
-        mv $backup_file backups/
-        
-    - name: Upload backup artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: database-backups
-        path: backups/
-        
-    - name: Clean up old backups
-      run: |
-        echo "Would clean up old backups here"
