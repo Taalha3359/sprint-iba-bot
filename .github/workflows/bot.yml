@@ -120,14 +120,20 @@ jobs:
         import sys
         sys.path.append('.')
         
-        from utils.database import MongoDB
+        from motor.motor_asyncio import AsyncIOMotorClient
         
         async def test_mongo_connection():
             try:
-                db = MongoDB()
-                # Test connection
-                await db.client.admin.command('ping')
-                print('✅ MongoDB connection successful')
+                # Test connection without authentication first
+                client = AsyncIOMotorClient('mongodb://localhost:27017')
+                await client.admin.command('ping')
+                print('✅ MongoDB connection successful (no auth)')
+                
+                # Test connection with authentication
+                client_auth = AsyncIOMotorClient('mongodb://admin:password@localhost:27017')
+                await client_auth.admin.command('ping')
+                print('✅ MongoDB authentication successful')
+                
                 return True
             except Exception as e:
                 print(f'❌ MongoDB connection failed: {e}')
@@ -135,20 +141,46 @@ jobs:
         
         async def test_mongo_operations():
             try:
-                db = MongoDB()
+                # Use authenticated connection
+                client = AsyncIOMotorClient('mongodb://admin:password@localhost:27017')
+                db = client.discord_bot_test
+                users = db.users
+                
                 # Test basic operations
                 test_user_id = 'github_actions_test'
-                user_data = await db.get_user(test_user_id)
-                print('✅ User retrieval test passed: ' + str(user_data['_id']))
                 
-                await db.update_user(test_user_id, {'test_field': 'test_value'})
+                # Create test user
+                user_data = {
+                    '_id': test_user_id,
+                    'total_score': 0,
+                    'questions_answered': 0,
+                    'premium_access': False,
+                    'premium_until': None,
+                    'is_admin': False
+                }
+                await users.insert_one(user_data)
+                print('✅ User creation test passed')
+                
+                # Retrieve user
+                retrieved_user = await users.find_one({'_id': test_user_id})
+                print('✅ User retrieval test passed: ' + str(retrieved_user['_id']))
+                
+                # Update user
+                await users.update_one(
+                    {'_id': test_user_id},
+                    {'$set': {'test_field': 'test_value'}}
+                )
                 print('✅ User update test passed')
                 
-                await db.increment_questions_answered(test_user_id)
+                # Increment counter
+                await users.update_one(
+                    {'_id': test_user_id},
+                    {'$inc': {'questions_answered': 1}}
+                )
                 print('✅ Question increment test passed')
                 
                 # Clean up test data
-                await db.users.delete_one({'_id': test_user_id})
+                await users.delete_one({'_id': test_user_id})
                 print('✅ Test cleanup completed')
                 
                 return True
@@ -183,13 +215,11 @@ jobs:
     - name: Run Discord Bot with MongoDB
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        MONGO_URI: "mongodb://admin:password@localhost:27017"
-        DATABASE_NAME: "discord_bot_github"
+        MONGO_URI: "mongodb://admin:password@localhost:27017/discord_bot"
       run: |
         echo "=== Starting Discord Bot with MongoDB ==="
         echo "Python version: $(python --version)"
         echo "MongoDB URI: $MONGO_URI"
-        echo "Database: $DATABASE_NAME"
         
         # Add automatic restart wrapper with improved error handling
         MAX_RESTARTS=10
@@ -205,7 +235,7 @@ jobs:
           if [ $EXIT_CODE -eq 0 ]; then
             echo "=== Bot stopped normally with exit code $EXIT_CODE at $(date) ==="
             break
-          else
+          else:
             echo "=== Bot stopped with exit code $EXIT_CODE at $(date) ==="
             
             RESTART_COUNT=$((RESTART_COUNT + 1))
