@@ -7,9 +7,14 @@ import asyncio
 
 class MongoDB:
     def __init__(self):
-        self.mongo_uri = os.getenv('MONGO_URI', 'mongodb://localhost:27017')
+        self.mongo_uri = os.getenv('MONGO_URI', 'mongodb://localhost:27017/discord_bot')
         self.client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
-        self.db = self.client.discord_bot
+        # Extract database name from URI or use default
+        if '/' in self.mongo_uri:
+            db_name = self.mongo_uri.split('/')[-1].split('?')[0]
+        else:
+            db_name = 'discord_bot'
+        self.db = self.client[db_name]
         self.users = self.db.users
         self.leaderboard = self.db.leaderboard
         
@@ -19,13 +24,18 @@ class MongoDB:
     async def _create_indexes(self):
         """Create indexes for better query performance"""
         try:
-            await self.users.create_index("_id")
-            await self.users.create_index("premium_until")
-            await self.users.create_index("is_admin")
-            await self.leaderboard.create_index("_id")
-            print("✅ Database indexes created successfully")
+            # Try to create indexes, but don't fail if we don't have permissions
+            try:
+                await self.users.create_index("_id")
+                await self.users.create_index("premium_until")
+                await self.users.create_index("is_admin")
+                await self.leaderboard.create_index("_id")
+                print("✅ Database indexes created successfully")
+            except Exception as e:
+                # If we can't create indexes (due to auth), just continue
+                print(f"⚠️  Could not create indexes (may need admin permissions): {e}")
         except Exception as e:
-            print(f"❌ Error creating database indexes: {e}")
+            print(f"❌ Error in index creation: {e}")
     
     async def get_user(self, user_id):
         """Get user data from MongoDB"""
@@ -253,4 +263,5 @@ async def test_connection():
 if __name__ == "__main__":
     # Run connection test
     asyncio.run(test_connection())
+
 
