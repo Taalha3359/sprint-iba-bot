@@ -85,3 +85,29 @@ class UserDatabase:
         user_data = self.get_user(user_id)
         user_data['is_admin'] = is_admin
         self.update_user(user_id, user_data)
+
+    def get_user(self, user_id):
+        try:
+            user_data = self.users.find_one({'_id': str(user_id)})
+            if not user_data:
+                return self.create_user(user_id)
+            
+            # Remove MongoDB's _id field to avoid serialization issues
+            user_data.pop('_id', None)
+            return user_data
+            
+        except Exception as e:
+            print(f"❌ MongoDB error in get_user: {e}")
+            # Return default user data if MongoDB fails
+            return {
+                'total_score': 0,
+                'questions_answered': 0,
+                'premium_access': False,
+                'premium_until': None,
+                'is_admin': False,
+                'math': {'correct': 0, 'total': 0, 'topics': {}},
+                'english': {'correct': 0, 'total': 0, 'topics': {}},
+                'analytical': {'correct': 0, 'total': 0, 'topics': {}}
+            }
+
+
