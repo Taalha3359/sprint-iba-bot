@@ -217,13 +217,12 @@ async def math_practice(interaction: discord.Interaction, topic: app_commands.Ch
         user_id = interaction.user.id
         subject = "math"
         
-print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
+        print("Starting math practice for user {}, topic: {}".format(user_id, topic.value))
         
         # Defer the response first to prevent interaction timeout
         if not interaction.response.is_done():
             await interaction.response.defer(thinking=True, ephemeral=True)
         else:
-            # If already responded, we need to handle differently
             try:
                 await interaction.followup.send("Processing your request...", ephemeral=True)
             except:
@@ -251,21 +250,24 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
         question_data = qm.get_question("math", topic.value)
         if not question_data:
             try:
-                await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
+                await interaction.followup.send("No questions found for {}".format(topic.value), ephemeral=True)
             except:
                 try:
-                    await interaction.edit_original_response(content=f"No questions found for {topic.value}")
+                    await interaction.edit_original_response(content="No questions found for {}".format(topic.value))
                 except:
                     pass
             return
         
+        # Determine time limit
+        time_limit = config.TIME_LIMITS['math']
+        
         # Create embed
         embed = discord.Embed(
-            title=f"Math - {topic.value}",
-            description=f"**Question:**\n{question_data['question']}",
+            title="Math - {}".format(topic.value),
+            description="**Question:**\n{}".format(question_data['question']),
             color=discord.Color.blue()
         )
-        embed.set_footer(text=f"You have {config.TIME_LIMITS['math']} seconds")
+        embed.set_footer(text="You have {} seconds".format(time_limit))
         
         # Handle image
         file = None
@@ -273,7 +275,7 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
             file = discord.File(question_data['image_path'], filename="question.png")
             embed.set_image(url="attachment://question.png")
         
-        view = QuestionView(question_data, "math", user_id, config.TIME_LIMITS['math'])
+        view = QuestionView(question_data, subject, user_id, time_limit)
         
         # Send the question
         try:
@@ -287,24 +289,27 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
             view.message = message
             
             # Store active question
+            timeout_task = asyncio.create_task(question_timeout(user_id, time_limit))
             active_questions[user_id] = {
                 "question": question_data,
-                "subject": "math",
+                "subject": subject,
                 "topic": topic.value,
                 "view": view,
                 "message": message,
-                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['math']))
+                "timeout": timeout_task
             }
             
+            print("Math question sent successfully to user {}".format(user_id))
+            
         except Exception as e:
-            print(f"Error sending math question: {e}")
+            print("Error sending math question: {}".format(e))
             try:
                 await interaction.followup.send("Failed to send the question. Please try again.", ephemeral=True)
             except:
                 pass
             
     except Exception as e:
-        print(f"Error in math_practice: {e}")
+        print("Error in math_practice: {}".format(e))
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
@@ -321,7 +326,7 @@ async def english_practice(interaction: discord.Interaction, topic: app_commands
         user_id = interaction.user.id
         subject = "english"
         
-print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
+        print("Starting English practice for user {}, topic: {}".format(user_id, topic.value))
         
         # Defer the response first to prevent interaction timeout
         if not interaction.response.is_done():
@@ -354,21 +359,24 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
         question_data = qm.get_question("english", topic.value)
         if not question_data:
             try:
-                await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
+                await interaction.followup.send("No questions found for {}".format(topic.value), ephemeral=True)
             except:
                 try:
-                    await interaction.edit_original_response(content=f"No questions found for {topic.value}")
+                    await interaction.edit_original_response(content="No questions found for {}".format(topic.value))
                 except:
                     pass
             return
         
+        # Determine time limit
+        time_limit = config.TIME_LIMITS['english']
+        
         # Create embed
         embed = discord.Embed(
-            title=f"English - {topic.value}",
-            description=f"**Question:**\n{question_data['question']}",
+            title="English - {}".format(topic.value),
+            description="**Question:**\n{}".format(question_data['question']),
             color=discord.Color.green()
         )
-        embed.set_footer(text=f"You have {config.TIME_LIMITS['english']} seconds")
+        embed.set_footer(text="You have {} seconds".format(time_limit))
         
         # Handle image
         file = None
@@ -376,7 +384,7 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
             file = discord.File(question_data['image_path'], filename="question.png")
             embed.set_image(url="attachment://question.png")
         
-        view = QuestionView(question_data, "english", user_id, config.TIME_LIMITS['english'])
+        view = QuestionView(question_data, subject, user_id, time_limit)
         
         # Send the question
         try:
@@ -388,7 +396,8 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
             # Get the message reference
             message = await interaction.original_response()
             view.message = message
-
+            
+            # Store active question
             timeout_task = asyncio.create_task(question_timeout(user_id, time_limit))
             active_questions[user_id] = {
                 "question": question_data,
@@ -398,16 +407,18 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
                 "message": message,
                 "timeout": timeout_task
             }
-                
+            
+            print("English question sent successfully to user {}".format(user_id))
+            
         except Exception as e:
-            print(f"Error sending English question: {e}")
+            print("Error sending English question: {}".format(e))
             try:
                 await interaction.followup.send("Failed to send the question. Please try again.", ephemeral=True)
             except:
                 pass
             
     except Exception as e:
-        print(f"Error in english_practice: {e}")
+        print("Error in english_practice: {}".format(e))
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
@@ -424,7 +435,7 @@ async def analytical_practice(interaction: discord.Interaction, topic: app_comma
         user_id = interaction.user.id
         subject = "analytical"
         
-print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
+        print("Starting analytical practice for user {}, topic: {}".format(user_id, topic.value))
         
         # Defer the response first to prevent interaction timeout
         if not interaction.response.is_done():
@@ -457,10 +468,10 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
         question_data = qm.get_question("analytical", topic.value)
         if not question_data:
             try:
-                await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
+                await interaction.followup.send("No questions found for {}".format(topic.value), ephemeral=True)
             except:
                 try:
-                    await interaction.edit_original_response(content=f"No questions found for {topic.value}")
+                    await interaction.edit_original_response(content="No questions found for {}".format(topic.value))
                 except:
                     pass
             return
@@ -473,11 +484,11 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
         
         # Create embed
         embed = discord.Embed(
-            title=f"Analytical - {topic.value}",
-            description=f"**Question:**\n{question_data['question']}",
+            title="Analytical - {}".format(topic.value),
+            description="**Question:**\n{}".format(question_data['question']),
             color=discord.Color.orange()
         )
-        embed.set_footer(text=f"You have {time_limit} seconds")
+        embed.set_footer(text="You have {} seconds".format(time_limit))
         
         # Handle image
         file = None
@@ -485,7 +496,7 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
             file = discord.File(question_data['image_path'], filename="question.png")
             embed.set_image(url="attachment://question.png")
         
-        view = QuestionView(question_data, "analytical", user_id, time_limit)
+        view = QuestionView(question_data, subject, user_id, time_limit)
         
         # Send the question
         try:
@@ -499,24 +510,27 @@ print(f"Starting {subject} practice for user {user_id}, topic: {topic.value}")
             view.message = message
             
             # Store active question
+            timeout_task = asyncio.create_task(question_timeout(user_id, time_limit))
             active_questions[user_id] = {
                 "question": question_data,
-                "subject": "analytical",
+                "subject": subject,
                 "topic": topic.value,
                 "view": view,
                 "message": message,
-                "timeout": asyncio.create_task(question_timeout(user_id, time_limit))
+                "timeout": timeout_task
             }
             
+            print("Analytical question sent successfully to user {}".format(user_id))
+            
         except Exception as e:
-            print(f"Error sending analytical question: {e}")
+            print("Error sending analytical question: {}".format(e))
             try:
                 await interaction.followup.send("Failed to send the question. Please try again.", ephemeral=True)
             except:
                 pass
             
     except Exception as e:
-        print(f"Error in analytical_practice: {e}")
+        print("Error in analytical_practice: {}".format(e))
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
@@ -905,6 +919,7 @@ async def on_app_command_error(interaction, error):
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
 
 
 
