@@ -396,6 +396,166 @@ async def profile(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
+class QuestionView(discord.ui.View):
+    def __init__(self, question_data, subject, user_id):
+        # Set timeout based on subject
+        if subject == "math":
+            timeout = config.TIME_LIMITS['math']
+        elif subject == "english":
+            timeout = config.TIME_LIMITS['english']
+        elif subject == "analytical":
+            # Check if it's a puzzle
+            if 'topic' in question_data and question_data.get('topic') == "puzzle":
+                timeout = config.TIME_LIMITS['puzzle']
+            else:
+                timeout = config.TIME_LIMITS['analytical']
+        else:
+            timeout = 60  # Default fallback
+            
+        super().__init__(timeout=timeout)
+        self.question_data = question_data
+        self.subject = subject
+        self.user_id = user_id
+        
+        for i, option in enumerate(question_data['options']):
+            self.add_item(QuestionButton(option, i, question_data['correct_answer']))
+
+class QuestionButton(discord.ui.Button):
+    def __init__(self, option, index, correct_index):
+        super().__init__(label=option, style=discord.ButtonStyle.secondary)
+        self.index = index
+        self.correct_index = correct_index
+    
+    async def callback(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        
+        if user_id not in active_questions:
+            await interaction.response.send_message("Question expired", ephemeral=True)
+            return
+        
+        # 🔥 FIX: Get fresh user data from database
+        user_data = db._read_data().get(str(user_id), {})
+        if not user_data:
+            user_data = db.create_user(user_id)
+        
+        question_data = active_questions[user_id]
+        subject = question_data['subject']
+        topic = question_data['topic']
+        
+        # Increment question count - ensure this works
+        db.increment_questions_answered(user_id)
+        
+        # Update local user_data with fresh values
+        user_data = db.get_user(user_id)  # Get updated data
+        
+        subject_data = user_data.get(subject, {})
+        subject_data['total'] = subject_data.get('total', 0) + 1
+        
+        is_correct = self.index == self.correct_index
+        
+        if is_correct:
+            user_data['total_score'] = user_data.get('total_score', 0) + config.SCORING['correct']
+            subject_data['correct'] = subject_data.get('correct', 0) + 1
+            result_text = "Correct! ✅"
+            color = discord.Color.green()
+        else:
+            user_data['total_score'] = user_data.get('total_score', 0) + config.SCORING['incorrect']
+            result_text = f"Incorrect! ❌ Correct answer: {question_data['question']['options'][self.correct_index]}"
+            color = discord.Color.red()
+        
+        user_data[subject] = subject_data
+        db.update_user(user_id, user_data)
+        lb.update_score(user_id, user_data['total_score'])
+        
+        embed = discord.Embed(title=result_text, color=color)
+        embed.add_field(name="Your Answer", value=self.label, inline=True)
+        embed.add_field(name="Score", value=user_data['total_score'], inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        if user_id in active_questions:
+            active_questions[user_id]['timeout'].cancel()
+            try:
+                await active_questions[user_id]['message'].edit(view=None)
+            except:
+                pass
+            del active_questions[user_id]
+
+# Timeout handler
+async def question_timeout(user_id, timeout):
+    await asyncio.sleep(timeout)
+    if user_id in active_questions:
+        user_data = db.get_user(user_id) or db.create_user(user_id)
+        question_data = active_questions[user_id]
+        subject = question_data['subject']
+        
+        subject_data = user_data.get(subject, {})
+        subject_data['total'] = subject_data.get('total', 0) + 1
+        subject_data['timeout'] = subject_data.get('timeout', 0) + 1
+        user_data[subject] = subject_data
+        db.update_user(user_id, user_data)
+        
+        try:
+            await active_questions[user_id]['message'].edit(content="Time's up!", view=None)
+        except:
+            pass
+        del active_questions[user_id]
+
+@bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
+async def my_status(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    
+    # 🔥 CRITICAL FIX: Force refresh user data from database
+    # This ensures we get the most current data
+    user_data = db._read_data().get(str(user_id), {})
+    
+    # If user doesn't exist in database, create them
+    if not user_data:
+        user_data = db.create_user(user_id)
+    else:
+        # Refresh premium status
+        if user_data.get('premium_until'):
+            try:
+                premium_until = datetime.fromisoformat(user_data['premium_until'])
+                if datetime.now() > premium_until:
+                    user_data['premium_access'] = False
+                    user_data['premium_until'] = None
+                    db.update_user(user_id, user_data)
+            except:
+                user_data['premium_access'] = False
+                user_data['premium_until'] = None
+                db.update_user(user_id, user_data)
+    
+    embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
+    
+    # Premium status
+    if user_data.get('premium_access') and user_data.get('premium_until'):
+        try:
+            premium_until = datetime.fromisoformat(user_data['premium_until'])
+            embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d %H:%M')}", inline=False)
+        except:
+            embed.add_field(name="Premium Access", value="✅ Active (invalid date format)", inline=False)
+    else:
+        embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
+    
+    # Question usage - FIXED: Use the refreshed data
+    questions_answered = user_data.get('questions_answered', 0)
+    free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
+    remaining = max(0, free_limit - questions_answered)
+    
+    embed.add_field(
+        name="Question Usage", 
+        value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}\n**Free limit:** {free_limit}", 
+        inline=False
+    )
+    
+    # Admin status
+    if user_data.get('is_admin') or user_id in config.PREMIUM_SETTINGS["admin_ids"]:
+        embed.add_field(name="Admin Status", value="✅ You have admin privileges", inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ADMIN COMMANDS
 @admin_group.command(name="add_ticket", description="Add premium access to a user")
 @app_commands.choices(duration=[
     app_commands.Choice(name="7 Days", value="7days"),
@@ -514,292 +674,9 @@ async def debug_commands(interaction: discord.Interaction):
         print(f"❌ Error in debug_commands: {e}")
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@bot.tree.command(name="debug_questions", description="Debug question counter")
-async def debug_questions(interaction: discord.Interaction):
-    if interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
-        await interaction.response.send_message("❌ Admin only command.", ephemeral=True)
-        return
-    
-    try:
-        user_id = interaction.user.id
-        user_data = db.get_user(user_id)
-        
-        debug_info = f"""
-        User ID: {user_id}
-        questions_answered: {user_data.get('questions_answered', 0)}
-        Raw data: {user_data}
-        """
-        
-        await interaction.response.send_message(f"```{debug_info}```", ephemeral=True)
-    except Exception as e:
-        print(f"❌ Error in debug_questions: {e}")
-        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
-        
-
-class QuestionView(discord.ui.View):
-    def __init__(self, question_data, subject, user_id):
-        # Set timeout based on subject
-        if subject == "math":
-            timeout = config.TIME_LIMITS['math']
-        elif subject == "english":
-            timeout = config.TIME_LIMITS['english']
-        elif subject == "analytical":
-            # Check if it's a puzzle
-            if 'topic' in question_data and question_data.get('topic') == "puzzle":
-                timeout = config.TIME_LIMITS['puzzle']
-            else:
-                timeout = config.TIME_LIMITS['analytical']
-        else:
-            timeout = 60  # Default fallback
-            
-        super().__init__(timeout=timeout)
-        self.question_data = question_data
-        self.subject = subject
-        self.user_id = user_id
-        
-        for i, option in enumerate(question_data['options']):
-            self.add_item(QuestionButton(option, i, question_data['correct_answer']))
-
-class QuestionButton(discord.ui.Button):
-    def __init__(self, option, index, correct_index):
-        super().__init__(label=option, style=discord.ButtonStyle.secondary)
-        self.index = index
-        self.correct_index = correct_index
-    
-    async def callback(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        
-        if user_id not in active_questions:
-            await interaction.response.send_message("Question expired", ephemeral=True)
-            return
-        
-        # 🔥 FIX: Get fresh user data from database
-        user_data = db._read_data().get(str(user_id), {})
-        if not user_data:
-            user_data = db.create_user(user_id)
-        
-        question_data = active_questions[user_id]
-        subject = question_data['subject']
-        topic = question_data['topic']
-        
-        # Increment question count - ensure this works
-        db.increment_questions_answered(user_id)
-        
-        # Update local user_data with fresh values
-        user_data = db.get_user(user_id)  # Get updated data
-        
-        subject_data = user_data.get(subject, {})
-        subject_data['total'] = subject_data.get('total', 0) + 1
-        
-        is_correct = self.index == self.correct_index
-        
-        if is_correct:
-            user_data['total_score'] = user_data.get('total_score', 0) + config.SCORING['correct']
-            subject_data['correct'] = subject_data.get('correct', 0) + 1
-            result_text = "Correct! ✅"
-            color = discord.Color.green()
-        else:
-            user_data['total_score'] = user_data.get('total_score', 0) + config.SCORING['incorrect']
-            result_text = f"Incorrect! ❌ Correct answer: {question_data['question']['options'][self.correct_index]}"
-            color = discord.Color.red()
-        
-        user_data[subject] = subject_data
-        db.update_user(user_id, user_data)
-        lb.update_score(user_id, user_data['total_score'])
-        
-        embed = discord.Embed(title=result_text, color=color)
-        embed.add_field(name="Your Answer", value=self.label, inline=True)
-        embed.add_field(name="Score", value=user_data['total_score'], inline=True)
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-        if user_id in active_questions:
-            active_questions[user_id]['timeout'].cancel()
-            try:
-                await active_questions[user_id]['message'].edit(view=None)
-            except:
-                pass
-            del active_questions[user_id]
-            
-# Timeout handler
-async def question_timeout(user_id, timeout):
-    await asyncio.sleep(timeout)
-    if user_id in active_questions:
-        user_data = db.get_user(user_id) or db.create_user(user_id)
-        question_data = active_questions[user_id]
-        subject = question_data['subject']
-        
-        subject_data = user_data.get(subject, {})
-        subject_data['total'] = subject_data.get('total', 0) + 1
-        subject_data['timeout'] = subject_data.get('timeout', 0) + 1
-        user_data[subject] = subject_data
-        db.update_user(user_id, user_data)
-        
-        try:
-            await active_questions[user_id]['message'].edit(content="Time's up!", view=None)
-        except:
-            pass
-        del active_questions[user_id]
-
-@bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
-async def my_status(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    
-    # 🔥 CRITICAL FIX: Force refresh user data from database
-    # This ensures we get the most current data
-    user_data = db._read_data().get(str(user_id), {})
-    
-    # If user doesn't exist in database, create them
-    if not user_data:
-        user_data = db.create_user(user_id)
-    else:
-        # Refresh premium status
-        if user_data.get('premium_until'):
-            try:
-                premium_until = datetime.fromisoformat(user_data['premium_until'])
-                if datetime.now() > premium_until:
-                    user_data['premium_access'] = False
-                    user_data['premium_until'] = None
-                    db.update_user(user_id, user_data)
-            except:
-                user_data['premium_access'] = False
-                user_data['premium_until'] = None
-                db.update_user(user_id, user_data)
-    
-    embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
-    
-    # Premium status
-    if user_data.get('premium_access') and user_data.get('premium_until'):
-        try:
-            premium_until = datetime.fromisoformat(user_data['premium_until'])
-            embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d %H:%M')}", inline=False)
-        except:
-            embed.add_field(name="Premium Access", value="✅ Active (invalid date format)", inline=False)
-    else:
-        embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
-    
-    # Question usage - FIXED: Use the refreshed data
-    questions_answered = user_data.get('questions_answered', 0)
-    free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
-    remaining = max(0, free_limit - questions_answered)
-    
-    embed.add_field(
-        name="Question Usage", 
-        value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}\n**Free limit:** {free_limit}", 
-        inline=False
-    )
-    
-    # Admin status
-    if user_data.get('is_admin') or user_id in config.PREMIUM_SETTINGS["admin_ids"]:
-        embed.add_field(name="Admin Status", value="✅ You have admin privileges", inline=False)
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-# Admin commands group
-@bot.tree.command(name="admin", description="Admin management commands")
-async def admin(interaction: discord.Interaction):
-    # This is just a parent command, actual functionality in subcommands
-    pass
-
-# Admin subcommand group
-admin_group = app_commands.Group(name="admin", description="Admin management commands")
-
-@admin_group.command(name="add_ticket", description="Add premium access to a user")
-@app_commands.choices(duration=[
-    app_commands.Choice(name="7 Days", value="7days"),
-    app_commands.Choice(name="14 Days", value="14days"),
-    app_commands.Choice(name="1 Month", value="1month"),
-    app_commands.Choice(name="3 Months", value="3months")
-])
-async def add_ticket(interaction: discord.Interaction, user: discord.User, duration: app_commands.Choice[str]):
-    # Check if user is admin
-    user_data = db.get_user(interaction.user.id)
-    if not user_data.get('is_admin') and interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
-        await interaction.response.send_message("❌ Admin access required.", ephemeral=True)
-        return
-    
-    # Add premium access
-    days = config.PREMIUM_SETTINGS["ticket_durations"][duration.value]
-    premium_until = db.add_premium_access(user.id, days)
-    
-    embed = discord.Embed(
-        title="✅ Ticket Added",
-        description=f"Premium access granted to {user.mention}\n"
-                  f"**Duration:** {duration.name}\n"
-                  f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}",
-        color=discord.Color.green()
-    )
-    
-    await interaction.response.send_message(embed=embed)
-    
-    # Notify the user
-    try:
-        user_embed = discord.Embed(
-            title="🎉 Premium Access Granted!",
-            description=f"You've received {duration.name} of premium access!\n"
-                      f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}\n\n"
-                      f"You can now use the bot without limits in our premium channel.",
-            color=discord.Color.gold()
-        )
-        await user.send(embed=user_embed)
-    except:
-        pass  # Can't DM user
-
-@admin_group.command(name="check_access", description="Check a user's access status")
-async def check_access(interaction: discord.Interaction, user: discord.User):
-    user_data = db.get_user(user.id)
-    access_control = AccessControl(db)
-    
-    embed = discord.Embed(title=f"Access Status: {user.display_name}", color=discord.Color.blue())
-    
-    # Premium status
-    if user_data.get('premium_access'):
-        premium_until = datetime.fromisoformat(user_data['premium_until'])
-        embed.add_field(name="Premium Status", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d')}", inline=False)
-    else:
-        embed.add_field(name="Premium Status", value="❌ No active subscription", inline=False)
-    
-    # Question usage
-    questions_answered = user_data.get('questions_answered', 0)
-    remaining = access_control.get_remaining_questions(user.id)
-    embed.add_field(name="Question Usage", value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}", inline=False)
-    
-    # Admin status
-    if user_data.get('is_admin') or user.id in config.PREMIUM_SETTINGS["admin_ids"]:
-        embed.add_field(name="Admin", value="✅ Yes", inline=True)
-    else:
-        embed.add_field(name="Admin", value="❌ No", inline=True)
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="debug_questions", description="Debug question counter")
-async def debug_questions(interaction: discord.Interaction):
-    if interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
-        await interaction.response.send_message("❌ Admin only command.", ephemeral=True)
-        return
-    
-    user_id = interaction.user.id
-    user_data = db.get_user(user_id)
-    
-    debug_info = f"""
-    User ID: {user_id}
-    questions_answered: {user_data.get('questions_answered', 0)}
-    Raw data: {user_data}
-    """
-    
-    await interaction.response.send_message(f"```{debug_info}```", ephemeral=True)
+# Register the admin group with the bot
+bot.tree.add_command(admin_group)
 
 # Run the bot
 if __name__ == "__main__":
-
     bot.run(config.BOT_TOKEN)
-
-
-
-
-
-
-
-
-
-
