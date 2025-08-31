@@ -7,10 +7,12 @@ import random
 import json
 from datetime import datetime, timedelta
 
+
 import config
 from utils.database import UserDatabase
 from utils.question_manager import QuestionManager
 from utils.leaderboard import Leaderboard
+from utils.access_control import AccessControl
 
 # Setup bot
 intents = discord.Intents.default()
@@ -23,6 +25,7 @@ bot = commands.Bot(command_prefix=config.BOT_PREFIX, intents=intents)
 db = UserDatabase()
 qm = QuestionManager()
 lb = Leaderboard()
+access_control = AccessControl(db)
 
 # Store active questions
 active_questions = {}
@@ -397,21 +400,23 @@ async def question_timeout(user_id, timeout):
 @bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
 async def my_status(interaction: discord.Interaction):
     user_id = interaction.user.id
-    access_control = AccessControl(db)
     user_data = db.get_user(user_id)
     
     embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
     
     # Premium status
-    if user_data.get('premium_access'):
-        premium_until = datetime.fromisoformat(user_data['premium_until'])
-        embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d')}", inline=False)
+    if user_data.get('premium_access') and user_data.get('premium_until'):
+        try:
+            premium_until = datetime.fromisoformat(user_data['premium_until'])
+            embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d')}", inline=False)
+        except:
+            embed.add_field(name="Premium Access", value="✅ Active (invalid date format)", inline=False)
     else:
         embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
     
-    # Question usage - FIXED LINE
+    # Question usage
     questions_answered = user_data.get('questions_answered', 0)
-    remaining = access_control.get_remaining_questions(user_id)
+    remaining = max(0, config.PREMIUM_SETTINGS["free_question_limit"] - questions_answered)
     embed.add_field(name="Question Usage", value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}", inline=False)
     
     # Admin status
@@ -501,5 +506,6 @@ async def check_access(interaction: discord.Interaction, user: discord.User):
 if __name__ == "__main__":
 
     bot.run(config.BOT_TOKEN)
+
 
 
