@@ -1,32 +1,37 @@
-import json
 import os
+from pymongo import MongoClient
 
 class Leaderboard:
-    def __init__(self, file_path='data/leaderboard.json'):
-        self.file_path = file_path
-        self._ensure_data_file()
-    
-    def _ensure_data_file(self):
-        os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
-        if not os.path.exists(self.file_path):
-            with open(self.file_path, 'w') as f:
-                json.dump({}, f)
-    
-    def _read_data(self):
-        with open(self.file_path, 'r') as f:
-            return json.load(f)
-    
-    def _write_data(self, data):
-        with open(self.file_path, 'w') as f:
-            json.dump(data, f, indent=2)
+    def __init__(self):
+        self.connection_string = os.getenv('MONGODB_URI')
+        if not self.connection_string:
+            raise ValueError("MONGODB_URI environment variable is not set")
+        
+        self.client = MongoClient(self.connection_string)
+        self.db = self.client.sprint_bot
+        self.users = self.db.users
     
     def update_score(self, user_id, score):
-        data = self._read_data()
-        data[str(user_id)] = score
-        self._write_data(data)
+        try:
+            self.users.update_one(
+                {'_id': str(user_id)},
+                {'$set': {'total_score': score}},
+                upsert=True
+            )
+        except Exception as e:
+            print(f"Error updating leaderboard score: {e}")
     
     def get_leaderboard(self):
-        data = self._read_data()
-        # Sort by score (highest first)
-        sorted_data = sorted(data.items(), key=lambda x: x[1], reverse=True)
-        return sorted_data
+        try:
+            # Get top 10 users by score
+            top_users = self.users.find().sort('total_score', -1).limit(10)
+            
+            leaderboard_data = []
+            for user in top_users:
+                if 'total_score' in user:
+                    leaderboard_data.append((user['_id'], user['total_score']))
+            
+            return leaderboard_data
+        except Exception as e:
+            print(f"Error getting leaderboard: {e}")
+            return []
