@@ -151,6 +151,59 @@ async def on_interaction(interaction: discord.Interaction):
         except:
             pass
 
+async def question_timeout(user_id, timeout):
+    """Handle question timeout"""
+    try:
+        await asyncio.sleep(timeout)
+        if user_id in active_questions:
+            question_data = active_questions[user_id]
+            view = question_data.get('view')
+            
+            if view and not getattr(view, 'answered', False):
+                # Mark as timed out
+                view.timed_out = True
+                view.answered = True
+                
+                # Disable all buttons
+                for item in view.children:
+                    if isinstance(item, discord.ui.Button):
+                        item.disabled = True
+                
+                # Update the message if it exists
+                if hasattr(view, 'message') and view.message:
+                    try:
+                        await view.message.edit(view=view)
+                    except (discord.NotFound, discord.HTTPException):
+                        pass
+                
+                # Update database for timeout
+                try:
+                    user_data = await db.get_user(user_id)
+                    subject = question_data['subject']
+                    
+                    # Initialize subject data if not exists
+                    if subject not in user_data:
+                        user_data[subject] = {'correct': 0, 'total': 0, 'timeout': 0, 'topics': {}}
+                    
+                    subject_data = user_data[subject]
+                    subject_data['total'] = subject_data.get('total', 0) + 1
+                    subject_data['timeout'] = subject_data.get('timeout', 0) + 1
+                    
+                    user_data[subject] = subject_data
+                    await db.update_user(user_id, user_data)
+                except Exception as e:
+                    print(f"Error updating database on timeout: {e}")
+                
+    except asyncio.CancelledError:
+        # Task was cancelled, which is normal when user answers
+        pass
+    except Exception as e:
+        print(f"Error in question_timeout: {e}")
+    finally:
+        # Clean up
+        if user_id in active_questions:
+            del active_questions[user_id]
+
 @bot.event
 async def on_app_command_completion(interaction: discord.Interaction, command: app_commands.Command):
     print(f"Command {command.name} completed by {interaction.user}")
@@ -328,17 +381,17 @@ async def english_practice(interaction: discord.Interaction, topic: app_commands
             # Get the message reference
             message = await interaction.original_response()
             view.message = message
-            
-            # Store active question
+
+            timeout_task = asyncio.create_task(question_timeout(user_id, time_limit))
             active_questions[user_id] = {
                 "question": question_data,
-                "subject": "english",
+                "subject": subject,
                 "topic": topic.value,
                 "view": view,
                 "message": message,
-                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['english']))
+                "timeout": timeout_task
             }
-            
+                
         except Exception as e:
             print(f"Error sending English question: {e}")
             try:
@@ -535,34 +588,53 @@ class QuestionView(discord.ui.View):
             self.add_item(QuestionButton(option, i, question_data['correct_answer']))
     
     async def on_timeout(self):
-        self.timed_out = True
-        # Disable all buttons
-        for item in self.children:
-            if isinstance(item, discord.ui.Button):
-                item.disabled = True
-        
-        # Update the message if it exists
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except:
-                pass
-        
-        # Handle timeout in database
         try:
-            user_data = await db.get_user(self.user_id)
-            subject_data = user_data.get(self.subject, {})
-            subject_data['total'] = subject_data.get('total', 0) + 1
-            subject_data['timeout'] = subject_data.get('timeout', 0) + 1
-            user_data[self.subject] = subject_data
-            await db.update_user(self.user_id, user_data)
+            self.timed_out = True
+            self.answered = True  # Mark as answered to prevent further interactions
+            
+            # Disable all buttons
+            for item in self.children:
+                if isinstance(item, discord.ui.Button):
+                    item.disabled = True
+            
+            # Update the message if it exists
+            if self.message:
+                try:
+                    await self.message.edit(view=self)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+            
+            # Handle timeout in database
+            try:
+                user_data = await db.get_user(self.user_id)
+                
+                # Initialize subject data if not exists
+                if self.subject not in user_data:
+                    user_data[self.subject] = {'correct': 0, 'total': 0, 'timeout': 0, 'topics': {}}
+                
+                subject_data = user_data[self.subject]
+                subject_data['total'] = subject_data.get('total', 0) + 1
+                subject_data['timeout'] = subject_data.get('timeout', 0) + 1
+                
+                user_data[self.subject] = subject_data
+                await db.update_user(self.user_id, user_data)
+            except Exception as e:
+                print(f"Error handling timeout in database: {e}")
+            
         except Exception as e:
-            print(f"Error handling timeout: {e}")
+            print(f"Error in timeout handler: {e}")
         
-        # Remove from active questions
-        if self.user_id in active_questions:
-            del active_questions[self.user_id]
-
+        finally:
+            # Always remove from active questions
+            if self.user_id in active_questions:
+                try:
+                    # Cancel timeout task if it exists
+                    if 'timeout' in active_questions[self.user_id]:
+                        active_questions[self.user_id]['timeout'].cancel()
+                    del active_questions[self.user_id]
+                except:
+                    pass
+                    
 class QuestionButton(discord.ui.Button):
     def __init__(self, option, index, correct_index):
         super().__init__(label=option, style=discord.ButtonStyle.secondary)
@@ -570,48 +642,71 @@ class QuestionButton(discord.ui.Button):
         self.correct_index = correct_index
     
     async def callback(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        
-        if user_id not in active_questions:
-            await interaction.response.send_message("Question expired or already answered", ephemeral=True)
-            return
-        
-        # Get the view and mark as answered
-        question_data = active_questions[user_id]
-        view = question_data['view']
-        
-        if view.answered:
-            await interaction.response.send_message("You already answered this question!", ephemeral=True)
-            return
-        
-        view.answered = True
-        
-        # Disable all buttons
-        for item in view.children:
-            if isinstance(item, discord.ui.Button):
-                item.disabled = True
-        
         try:
-            await interaction.message.edit(view=view)
-        except:
-            pass
-        
-        # Cancel timeout task
-        if 'timeout' in active_questions[user_id]:
-            active_questions[user_id]['timeout'].cancel()
-        
-        # Process the answer
-        try:
+            user_id = interaction.user.id
+            
+            # Check if user has an active question
+            if user_id not in active_questions:
+                await interaction.response.send_message("Question expired or already answered", ephemeral=True)
+                return
+
+            if 'timeout' in active_questions[user_id]:
+                try:
+                    active_questions[user_id]['timeout'].cancel()
+                except:
+                    pass
+            
+            # Get the question data and view
+            question_data = active_questions[user_id]
+            view = question_data['view']
+            
+            # Check if already answered
+            if hasattr(view, 'answered') and view.answered:
+                await interaction.response.send_message("You already answered this question!", ephemeral=True)
+                return
+            
+            # Mark as answered
+            view.answered = True
+            
+            # Disable all buttons to prevent further interactions
+            for item in view.children:
+                if isinstance(item, discord.ui.Button):
+                    item.disabled = True
+            
+            # Update the message to show disabled buttons
+            try:
+                await interaction.message.edit(view=view)
+            except discord.NotFound:
+                # Message was deleted, continue processing
+                pass
+            except Exception as e:
+                print(f"Error updating message: {e}")
+            
+            # Cancel timeout task if it exists
+            if 'timeout' in active_questions[user_id]:
+                try:
+                    active_questions[user_id]['timeout'].cancel()
+                except:
+                    pass
+            
+            # Process the answer
             user_data = await db.get_user(user_id)
             subject = question_data['subject']
             
+            # Update question count
             await db.increment_questions_answered(user_id)
             
-            subject_data = user_data.get(subject, {})
+            # Initialize subject data if not exists
+            if subject not in user_data:
+                user_data[subject] = {'correct': 0, 'total': 0, 'topics': {}}
+            
+            subject_data = user_data[subject]
             subject_data['total'] = subject_data.get('total', 0) + 1
             
+            # Check if answer is correct
             is_correct = self.index == self.correct_index
             
+            # Update scores
             if is_correct:
                 user_data['total_score'] = user_data.get('total_score', 0) + config.SCORING['correct']
                 subject_data['correct'] = subject_data.get('correct', 0) + 1
@@ -622,23 +717,38 @@ class QuestionButton(discord.ui.Button):
                 result_text = f"Incorrect! ❌ Correct answer: {question_data['question']['options'][self.correct_index]}"
                 color = discord.Color.red()
             
+            # Update user data
             user_data[subject] = subject_data
             await db.update_user(user_id, user_data)
             await db.update_leaderboard(user_id, user_data['total_score'])
             
+            # Send result
             embed = discord.Embed(title=result_text, color=color)
             embed.add_field(name="Your Answer", value=self.label, inline=True)
             embed.add_field(name="Score", value=user_data['total_score'], inline=True)
             
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            # Send response
+            if interaction.response.is_done():
+                # If response already done, use followup
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
             
         except Exception as e:
-            print(f"Error processing answer: {e}")
-            await interaction.response.send_message("An error occurred while processing your answer.", ephemeral=True)
+            print(f"Error in button callback: {e}")
+            # Try to send error message
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send("An error occurred while processing your answer.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("An error occurred while processing your answer.", ephemeral=True)
+            except:
+                pass
         
-        # Remove from active questions
-        if user_id in active_questions:
-            del active_questions[user_id]
+        finally:
+            # Always remove from active questions
+            if user_id in active_questions:
+                del active_questions[user_id]
 
 @bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
 async def my_status(interaction: discord.Interaction):
@@ -809,6 +919,7 @@ async def on_app_command_error(interaction, error):
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
 
 
 
