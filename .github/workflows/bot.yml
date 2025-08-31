@@ -10,7 +10,6 @@ on:
 env:
   PYTHON_VERSION: '3.9'
   MONGO_VERSION: '5.0'
-  DOCKER_MONGO_IMAGE: 'mongo:5.0'
 
 jobs:
   setup-and-test:
@@ -33,6 +32,8 @@ jobs:
         pip install pytest pytest-asyncio
         
     - name: Run configuration validation
+      env:
+        TESTING: "true"
       run: |
         python -c "
         import config
@@ -47,6 +48,8 @@ jobs:
         "
         
     - name: Run basic tests
+      env:
+        TESTING: "true"
       run: |
         python -c "
         # Test basic imports
@@ -108,43 +111,43 @@ jobs:
         
     - name: Test MongoDB connection
       env:
-      TESTING: "true"  # Add this line
+        TESTING: "true"
       run: |
         python -c "
         import asyncio
         import os
         from utils.database import MongoDB
-    
-      async def test_mongo():
-          try:
-              db = MongoDB()
-              # Test connection
-              await db.client.admin.command('ping')
-              print('✅ MongoDB connection successful')
-              
-              # Test basic operations
-              test_user_id = 'github_actions_test'
-              user_data = await db.get_user(test_user_id)
-              print(f'✅ User retrieval test passed: {user_data[\"_id\"]}')
-              
-              await db.update_user(test_user_id, {'test_field': 'test_value'})
-              print('✅ User update test passed')
-              
-              await db.increment_questions_answered(test_user_id)
-              print('✅ Question increment test passed')
-              
-              # Clean up test data
-              await db.users.delete_one({'_id': test_user_id})
-              print('✅ Test cleanup completed')
-              
-              return True
-          except Exception as e:
-              print(f'❌ MongoDB test failed: {e}')
-              return False
-      
-      success = asyncio.run(test_mongo())
-      exit(0 if success else 1)
-      "
+        
+        async def test_mongo():
+            try:
+                db = MongoDB()
+                # Test connection
+                await db.client.admin.command('ping')
+                print('✅ MongoDB connection successful')
+                
+                # Test basic operations
+                test_user_id = 'github_actions_test'
+                user_data = await db.get_user(test_user_id)
+                print('✅ User retrieval test passed: ' + str(user_data['_id']))
+                
+                await db.update_user(test_user_id, {'test_field': 'test_value'})
+                print('✅ User update test passed')
+                
+                await db.increment_questions_answered(test_user_id)
+                print('✅ Question increment test passed')
+                
+                # Clean up test data
+                await db.users.delete_one({'_id': test_user_id})
+                print('✅ Test cleanup completed')
+                
+                return True
+            except Exception as e:
+                print(f'❌ MongoDB test failed: {e}')
+                return False
+        
+        success = asyncio.run(test_mongo())
+        exit(0 if success else 1)
+        "
         
     - name: Create data directories
       run: |
