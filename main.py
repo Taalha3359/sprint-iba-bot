@@ -497,11 +497,9 @@ async def check_access(interaction: discord.Interaction, user: discord.User):
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# Register the admin group
-bot.tree.add_command(admin_group)
-
 # Run the bot
 if __name__ == "__main__":
 
     bot.run(config.BOT_TOKEN)
+
 
