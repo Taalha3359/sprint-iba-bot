@@ -29,6 +29,24 @@ class AccessControl:
             return True, "free_access"
         else:
             return False, "limit_reached"
+
+    def _check_premium_status(self, user_id):
+    user_data = self.db.get_user(user_id)
+    if user_data.get('premium_until'):
+        try:
+            premium_until = datetime.fromisoformat(user_data['premium_until'])
+            if datetime.now() > premium_until:
+                user_data['premium_access'] = False
+                user_data['premium_until'] = None
+                self.db.update_user(user_id, user_data)
+                return False
+            return True
+        except:
+            user_data['premium_access'] = False
+            user_data['premium_until'] = None
+            self.db.update_user(user_id, user_data)
+            return False
+    return False
     
     def get_remaining_questions(self, user_id):
         user_data = self.db.get_user(user_id)
