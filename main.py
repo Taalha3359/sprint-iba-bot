@@ -521,10 +521,28 @@ async def check_access(interaction: discord.Interaction, user: discord.User):
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="debug_questions", description="Debug question counter")
+async def debug_questions(interaction: discord.Interaction):
+    if interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
+        await interaction.response.send_message("❌ Admin only command.", ephemeral=True)
+        return
+    
+    user_id = interaction.user.id
+    user_data = db.get_user(user_id)
+    
+    debug_info = f"""
+    User ID: {user_id}
+    questions_answered: {user_data.get('questions_answered', 0)}
+    Raw data: {user_data}
+    """
+    
+    await interaction.response.send_message(f"```{debug_info}```", ephemeral=True)
+
 # Run the bot
 if __name__ == "__main__":
 
     bot.run(config.BOT_TOKEN)
+
 
 
 
