@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import asyncio
 import os
@@ -8,19 +8,9 @@ import json
 from datetime import datetime, timedelta
 
 import config
-from utils.database import UserDatabase
+from utils.database import MongoDB  # Updated to MongoDB
 from utils.question_manager import QuestionManager
-from utils.leaderboard import Leaderboard
 from utils.access_control import AccessControl
-from pymongo import MongoClient
-
-# Your connection string from GitHub Secrets
-MONGODB_URI = os.getenv('MONGODB_URI')
-
-# Connect to MongoDB
-client = MongoClient(MONGODB_URI)
-db = client.sprint_bot  # Your database name
-users = db.users        # Your collection name
 
 # Setup bot
 intents = discord.Intents.default()
@@ -29,321 +19,201 @@ intents.members = True
 
 bot = commands.Bot(command_prefix=config.BOT_PREFIX, intents=intents)
 
-# Initialize components
-db = UserDatabase()
+# Initialize components with MongoDB
+db = MongoDB()
 qm = QuestionManager()
-lb = Leaderboard()
 access_control = AccessControl(db)
 
 # Store active questions
 active_questions = {}
 
-# Admin commands group
-admin_group = app_commands.Group(name="admin", description="Admin management commands")
+# Background task for cleaning expired premium users
+@tasks.loop(hours=24)
+async def cleanup_expired_premium():
+    """Daily cleanup of expired premium users"""
+    try:
+        count = await db.cleanup_expired_premium()
+        if count > 0:
+            print(f"Cleaned up {count} expired premium users")
+    except Exception as e:
+        print(f"Error in premium cleanup: {e}")
+
+@cleanup_expired_premium.before_loop
+async def before_cleanup():
+    """Wait until bot is ready before starting cleanup task"""
+    await bot.wait_until_ready()
 
 @bot.event
 async def on_ready():
     print(f'{bot.user} is now online!')
     
-    # Test MongoDB connection with timeout
-    try:
-        # Simple test that won't hang
-        import asyncio
-        await asyncio.wait_for(asyncio.to_thread(db.get_user, 12345), timeout=5.0)
-        print("✅ MongoDB connection test successful")
-    except asyncio.TimeoutError:
-        print("❌ MongoDB connection timed out - using fallback mode")
-    except Exception as e:
-        print(f"❌ MongoDB connection test failed: {e}")
+    # Start background tasks
+    cleanup_expired_premium.start()
     
     try:
-        # Sync commands globally
         synced = await bot.tree.sync()
-        print(f"✅ Loaded {len(synced)} commands")
+        print(f"Loaded {len(synced)} commands")
+        
+        # Print bot statistics
+        stats = await db.get_user_stats()
+        print(f"Bot Statistics: {stats['total_users']} users, {stats['premium_users']} premium, {stats['total_questions_answered']} questions answered")
         
     except Exception as e:
-        print(f"❌ Error syncing commands: {e}")
+        print(f"Error: {e}")
+
+async def send_question_response(interaction, question_data, subject, topic, user_id):
+    """Helper function to send question responses with proper error handling"""
+    # Determine time limit
+    if subject == "math":
+        time_limit = config.TIME_LIMITS['math']
+    elif subject == "english":
+        time_limit = config.TIME_LIMITS['english']
+    elif subject == "analytical":
+        time_limit = config.TIME_LIMITS['puzzle'] if topic == "puzzle" else config.TIME_LIMITS['analytical']
+    else:
+        time_limit = 60
+    
+    # Create embed
+    embed = discord.Embed(
+        title=f"{subject.capitalize()} - {topic}",
+        description=f"**Question:**\n{question_data['question']}",
+        color=discord.Color.blue() if subject == "math" else 
+              discord.Color.green() if subject == "english" else 
+              discord.Color.orange()
+    )
+    embed.set_footer(text=f"You have {time_limit} seconds")
+    
+    # Handle image
+    file = None
+    if question_data.get('image_path') and os.path.exists(question_data['image_path']):
+        file = discord.File(question_data['image_path'], filename="question.png")
+        embed.set_image(url="attachment://question.png")
+    
+    view = QuestionView(question_data, subject, user_id, time_limit)
+    
+    # Send response
+    try:
+        if file:
+            await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        
+        # Store message reference in the view
+        view.message = await interaction.original_response()
+        
+        # Store active question
+        active_questions[user_id] = {
+            "question": question_data,
+            "subject": subject,
+            "topic": topic,
+            "view": view,
+            "message": view.message
+        }
+        
+    except Exception as e:
+        print(f"Error sending question: {e}")
+        try:
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+        except:
+            try:
+                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+            except:
+                pass
 
 @bot.tree.command(name="math_practice", description="Practice math questions")
 @app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.MATH_TOPICS])
 async def math_practice(interaction: discord.Interaction, topic: app_commands.Choice[str]):
-    try:
-        user_id = interaction.user.id
-        
-        # Check if user already has an active question
-        if user_id in active_questions:
-            try:
-                await interaction.response.send_message("You already have an active question. Please answer it first.", ephemeral=True)
-            except discord.errors.NotFound:
-                # Interaction already expired, use followup
-                await interaction.followup.send("You already have an active question. Please answer it first.", ephemeral=True)
-            return
-        
-        # Check access
-        access_control = AccessControl(db)
-        has_access, access_type = await access_control.check_access(interaction)
-        
-        if not has_access:
-            await access_control.send_access_denied_message(interaction, access_type)
-            return
-        
-        # Get question
-        question_data = qm.get_question("math", topic.value)
-        if not question_data:
-            try:
-                await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
-            except discord.errors.NotFound:
-                await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
-            return
-        
-        # Create embed
-        embed = discord.Embed(
-            title=f"Math - {topic.value}",
-            description=f"**Question:**\n{question_data['question']}",
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text=f"You have {config.TIME_LIMITS['math']} seconds")
-        
-        # Handle image
-        file = None
-        if question_data.get('image_path') and os.path.exists(question_data['image_path']):
-            file = discord.File(question_data['image_path'], filename="question.png")
-            embed.set_image(url="attachment://question.png")
-        
-        view = QuestionView(question_data, "math", user_id)
-        
-        # Send response with error handling
+    user_id = interaction.user.id
+    
+    # Check if user already has an active question
+    if user_id in active_questions:
         try:
-            if file:
-                await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            
-            # Store active question if response was successful
-            active_questions[user_id] = {
-                "question": question_data,
-                "subject": "math",
-                "topic": topic.value,
-                "message": await interaction.original_response(),
-                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['math']))
-            }
-            
+            await interaction.response.send_message("You already have an active question. Please answer it first.", ephemeral=True)
         except discord.errors.NotFound:
-            # Interaction expired, send as followup instead
-            if file:
-                await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=True)
-            else:
-                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-            
-            # For followup, we can't get original_response(), so handle differently
-            active_questions[user_id] = {
-                "question": question_data,
-                "subject": "math",
-                "topic": topic.value,
-                "message": None,  # Can't store message reference for followup
-                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['math']))
-            }
-            
-    except Exception as e:
-        print(f"Error in math_practice: {e}")
-        # Try to send error message if possible
+            await interaction.followup.send("You already have an active question. Please answer it first.", ephemeral=True)
+        return
+    
+    # Check access
+    has_access, access_type = await access_control.check_access(interaction)
+    if not has_access:
+        await access_control.send_access_denied_message(interaction, access_type)
+        return
+    
+    # Get question
+    question_data = qm.get_question("math", topic.value)
+    if not question_data:
         try:
-            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+            await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
         except discord.errors.NotFound:
-            try:
-                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
-            except:
-                pass  # Give up if both fail
+            await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
+        return
+    
+    await send_question_response(interaction, question_data, "math", topic.value, user_id)
 
 @bot.tree.command(name="english_practice", description="Practice English questions")
 @app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.ENGLISH_TOPICS])
 async def english_practice(interaction: discord.Interaction, topic: app_commands.Choice[str]):
-    try:
-        user_id = interaction.user.id
-        
-        # Check if user already has an active question
-        if user_id in active_questions:
-            try:
-                await interaction.response.send_message("You already have an active question. Please answer it first.", ephemeral=True)
-            except discord.errors.NotFound:
-                await interaction.followup.send("You already have an active question. Please answer it first.", ephemeral=True)
-            return
-        
-        # Check access
-        access_control = AccessControl(db)
-        has_access, access_type = await access_control.check_access(interaction)
-        
-        if not has_access:
-            await access_control.send_access_denied_message(interaction, access_type)
-            return
-        
-        # Get question
-        question_data = qm.get_question("english", topic.value)
-        if not question_data:
-            try:
-                await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
-            except discord.errors.NotFound:
-                await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
-            return
-        
-        # Create embed
-        embed = discord.Embed(
-            title=f"English - {topic.value}",
-            description=f"**Question:**\n{question_data['question']}",
-            color=discord.Color.green()
-        )
-        embed.set_footer(text=f"You have {config.TIME_LIMITS['english']} seconds")
-        
-        # Handle image
-        file = None
-        if question_data.get('image_path') and os.path.exists(question_data['image_path']):
-            file = discord.File(question_data['image_path'], filename="question.png")
-            embed.set_image(url="attachment://question.png")
-        
-        view = QuestionView(question_data, "english", user_id)
-        
-        # Send response with error handling
+    user_id = interaction.user.id
+    
+    # Check if user already has an active question
+    if user_id in active_questions:
         try:
-            if file:
-                await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            
-            # Store active question if response was successful
-            active_questions[user_id] = {
-                "question": question_data,
-                "subject": "english",
-                "topic": topic.value,
-                "message": await interaction.original_response(),
-                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['english']))
-            }
-            
+            await interaction.response.send_message("You already have an active question. Please answer it first.", ephemeral=True)
         except discord.errors.NotFound:
-            # Interaction expired, send as followup instead
-            if file:
-                await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=True)
-            else:
-                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-            
-            # For followup, we can't get original_response(), so handle differently
-            active_questions[user_id] = {
-                "question": question_data,
-                "subject": "english",
-                "topic": topic.value,
-                "message": None,
-                "timeout": asyncio.create_task(question_timeout(user_id, config.TIME_LIMITS['english']))
-            }
-            
-    except Exception as e:
-        print(f"Error in english_practice: {e}")
+            await interaction.followup.send("You already have an active question. Please answer it first.", ephemeral=True)
+        return
+    
+    # Check access
+    has_access, access_type = await access_control.check_access(interaction)
+    if not has_access:
+        await access_control.send_access_denied_message(interaction, access_type)
+        return
+    
+    # Get question
+    question_data = qm.get_question("english", topic.value)
+    if not question_data:
         try:
-            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+            await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
         except discord.errors.NotFound:
-            try:
-                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
-            except:
-                pass
+            await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
+        return
+    
+    await send_question_response(interaction, question_data, "english", topic.value, user_id)
 
 @bot.tree.command(name="analytical_practice", description="Practice analytical questions")
 @app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.ANALYTICAL_TOPICS])
 async def analytical_practice(interaction: discord.Interaction, topic: app_commands.Choice[str]):
-    try:
-        user_id = interaction.user.id
-        
-        # Check if user already has an active question
-        if user_id in active_questions:
-            try:
-                await interaction.response.send_message("You already have an active question. Please answer it first.", ephemeral=True)
-            except discord.errors.NotFound:
-                await interaction.followup.send("You already have an active question. Please answer it first.", ephemeral=True)
-            return
-        
-        # Check access
-        access_control = AccessControl(db)
-        has_access, access_type = await access_control.check_access(interaction)
-        
-        if not has_access:
-            await access_control.send_access_denied_message(interaction, access_type)
-            return
-        
-        # Get question
-        question_data = qm.get_question("analytical", topic.value)
-        if not question_data:
-            try:
-                await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
-            except discord.errors.NotFound:
-                await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
-            return
-        
-        # Determine time limit based on topic
-        if topic.value == "puzzle":
-            time_limit = config.TIME_LIMITS['puzzle']
-        else:
-            time_limit = config.TIME_LIMITS['analytical']
-        
-        # Create embed
-        embed = discord.Embed(
-            title=f"Analytical - {topic.value}",
-            description=f"**Question:**\n{question_data['question']}",
-            color=discord.Color.orange()
-        )
-        embed.set_footer(text=f"You have {time_limit} seconds")
-        
-        # Handle image
-        file = None
-        if question_data.get('image_path') and os.path.exists(question_data['image_path']):
-            file = discord.File(question_data['image_path'], filename="question.png")
-            embed.set_image(url="attachment://question.png")
-        
-        view = QuestionView(question_data, "analytical", user_id)
-        
-        # Send response with error handling
+    user_id = interaction.user.id
+    
+    # Check if user already has an active question
+    if user_id in active_questions:
         try:
-            if file:
-                await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            
-            # Store active question if response was successful
-            active_questions[user_id] = {
-                "question": question_data,
-                "subject": "analytical",
-                "topic": topic.value,
-                "message": await interaction.original_response(),
-                "timeout": asyncio.create_task(question_timeout(user_id, time_limit))
-            }
-            
+            await interaction.response.send_message("You already have an active question. Please answer it first.", ephemeral=True)
         except discord.errors.NotFound:
-            # Interaction expired, send as followup instead
-            if file:
-                await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=True)
-            else:
-                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-            
-            # For followup, we can't get original_response(), so handle differently
-            active_questions[user_id] = {
-                "question": question_data,
-                "subject": "analytical",
-                "topic": topic.value,
-                "message": None,
-                "timeout": asyncio.create_task(question_timeout(user_id, time_limit))
-            }
-            
-    except Exception as e:
-        print(f"Error in analytical_practice: {e}")
+            await interaction.followup.send("You already have an active question. Please answer it first.", ephemeral=True)
+        return
+    
+    # Check access
+    has_access, access_type = await access_control.check_access(interaction)
+    if not has_access:
+        await access_control.send_access_denied_message(interaction, access_type)
+        return
+    
+    # Get question
+    question_data = qm.get_question("analytical", topic.value)
+    if not question_data:
         try:
-            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+            await interaction.response.send_message(f"No questions found for {topic.value}", ephemeral=True)
         except discord.errors.NotFound:
-            try:
-                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
-            except:
-                pass
-
+            await interaction.followup.send(f"No questions found for {topic.value}", ephemeral=True)
+        return
+    
+    await send_question_response(interaction, question_data, "analytical", topic.value, user_id)
 
 # Leaderboard command
 @bot.tree.command(name="leaderboard", description="Show leaderboard")
 async def leaderboard(interaction: discord.Interaction):
-    leaderboard_data = lb.get_leaderboard()
+    leaderboard_data = await db.get_leaderboard(10)
     
     embed = discord.Embed(
         title="Sprint IBA Leaderboard",
@@ -367,7 +237,7 @@ async def leaderboard(interaction: discord.Interaction):
 @bot.tree.command(name="profile", description="Check your stats")
 async def profile(interaction: discord.Interaction):
     user_id = interaction.user.id
-    user_data = db.get_user(user_id)
+    user_data = await db.get_user(user_id)
     
     if not user_data:
         embed = discord.Embed(
@@ -384,6 +254,7 @@ async def profile(interaction: discord.Interaction):
     )
     
     embed.add_field(name="Total Score", value=user_data.get('total_score', 0), inline=False)
+    embed.add_field(name="Questions Answered", value=user_data.get('questions_answered', 0), inline=False)
     
     for subject in ['math', 'english', 'analytical']:
         if subject in user_data:
@@ -399,28 +270,42 @@ async def profile(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 class QuestionView(discord.ui.View):
-    def __init__(self, question_data, subject, user_id):
-        # Set timeout based on subject
-        if subject == "math":
-            timeout = config.TIME_LIMITS['math']
-        elif subject == "english":
-            timeout = config.TIME_LIMITS['english']
-        elif subject == "analytical":
-            # Check if it's a puzzle
-            if 'topic' in question_data and question_data.get('topic') == "puzzle":
-                timeout = config.TIME_LIMITS['puzzle']
-            else:
-                timeout = config.TIME_LIMITS['analytical']
-        else:
-            timeout = 60  # Default fallback
-            
-        super().__init__(timeout=timeout)
+    def __init__(self, question_data, subject, user_id, timeout_duration):
+        super().__init__(timeout=timeout_duration)
         self.question_data = question_data
         self.subject = subject
         self.user_id = user_id
+        self.message = None
+        self.timed_out = False
         
         for i, option in enumerate(question_data['options']):
             self.add_item(QuestionButton(option, i, question_data['correct_answer']))
+    
+    async def on_timeout(self):
+        self.timed_out = True
+        # Disable all buttons
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        
+        # Update the message if it exists
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
+        
+        # Handle timeout in database
+        user_data = await db.get_user(self.user_id)
+        subject_data = user_data.get(self.subject, {})
+        subject_data['total'] = subject_data.get('total', 0) + 1
+        subject_data['timeout'] = subject_data.get('timeout', 0) + 1
+        user_data[self.subject] = subject_data
+        await db.update_user(self.user_id, user_data)
+        
+        # Remove from active questions
+        if self.user_id in active_questions:
+            del active_questions[self.user_id]
 
 class QuestionButton(discord.ui.Button):
     def __init__(self, option, index, correct_index):
@@ -435,14 +320,32 @@ class QuestionButton(discord.ui.Button):
             await interaction.response.send_message("Question expired", ephemeral=True)
             return
         
-        # 🔥 FIXED: Use MongoDB method, not _read_data()
-        user_data = db.get_user(user_id)
+        # Get question data and view
         question_data = active_questions[user_id]
-        subject = question_data['subject']
-        topic = question_data['topic']
+        view = question_data['view']
         
-        # Increment question count
-        db.increment_questions_answered(user_id)
+        # Prevent multiple interactions
+        if view.timed_out:
+            await interaction.response.send_message("Question already timed out", ephemeral=True)
+            return
+        
+        # Disable all buttons to prevent further interactions
+        for item in view.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        
+        # Update the message
+        try:
+            await view.message.edit(view=view)
+        except:
+            pass
+        
+        # Process the answer
+        user_data = await db.get_user(user_id)
+        subject = question_data['subject']
+        
+        # Update question count
+        await db.increment_questions_answered(user_id)
         
         subject_data = user_data.get(subject, {})
         subject_data['total'] = subject_data.get('total', 0) + 1
@@ -460,109 +363,61 @@ class QuestionButton(discord.ui.Button):
             color = discord.Color.red()
         
         user_data[subject] = subject_data
-        db.update_user(user_id, user_data)
-        lb.update_score(user_id, user_data['total_score'])
+        await db.update_user(user_id, user_data)
+        await db.update_leaderboard(user_id, user_data['total_score'])
         
-        # DEFER response first to prevent interaction timeout
-        await interaction.response.defer(ephemeral=True)
-        
+        # Send result
         embed = discord.Embed(title=result_text, color=color)
         embed.add_field(name="Your Answer", value=self.label, inline=True)
         embed.add_field(name="Score", value=user_data['total_score'], inline=True)
         
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         
+        # Remove from active questions
         if user_id in active_questions:
-            active_questions[user_id]['timeout'].cancel()
-            try:
-                # Try to edit the original question message to remove buttons
-                await active_questions[user_id]['message'].edit(view=None)
-            except:
-                pass
             del active_questions[user_id]
-
-async def question_timeout(user_id, timeout):
-    await asyncio.sleep(timeout)
-    if user_id in active_questions:
-        user_data = db.get_user(user_id)  # Use MongoDB method
-        question_data = active_questions[user_id]
-        subject = question_data['subject']
-        
-        subject_data = user_data.get(subject, {})
-        subject_data['total'] = subject_data.get('total', 0) + 1
-        subject_data['timeout'] = subject_data.get('timeout', 0) + 1
-        user_data[subject] = subject_data
-        db.update_user(user_id, user_data)
-        
-        try:
-            await active_questions[user_id]['message'].edit(content="Time's up!", view=None)
-        except:
-            pass
-        del active_questions[user_id]
 
 @bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
 async def my_status(interaction: discord.Interaction):
-    try:
-        # DEFER THE RESPONSE IMMEDIATELY
-        await interaction.response.defer(ephemeral=True)
-        
-        user_id = interaction.user.id
-        
-        # 🔥 FIXED: Use MongoDB method, not _read_data()
-        user_data = db.get_user(user_id)
-        
-        # Refresh premium status
-        if user_data.get('premium_until'):
-            try:
-                premium_until = datetime.fromisoformat(user_data['premium_until'])
-                if datetime.now() > premium_until:
-                    user_data['premium_access'] = False
-                    user_data['premium_until'] = None
-                    db.update_user(user_id, user_data)
-            except:
-                user_data['premium_access'] = False
-                user_data['premium_until'] = None
-                db.update_user(user_id, user_data)
-        
-        embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
-        
-        # Premium status
-        if user_data.get('premium_access') and user_data.get('premium_until'):
-            try:
-                premium_until = datetime.fromisoformat(user_data['premium_until'])
-                embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d %H:%M')}", inline=False)
-            except:
-                embed.add_field(name="Premium Access", value="✅ Active (invalid date format)", inline=False)
-        else:
-            embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
-        
-        # Question usage
-        questions_answered = user_data.get('questions_answered', 0)
-        free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
-        remaining = max(0, free_limit - questions_answered)
-        
-        embed.add_field(
-            name="Question Usage", 
-            value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}\n**Free limit:** {free_limit}", 
-            inline=False
-        )
-        
-        # Admin status
-        if user_data.get('is_admin') or user_id in config.PREMIUM_SETTINGS["admin_ids"]:
-            embed.add_field(name="Admin Status", value="✅ You have admin privileges", inline=False)
-        
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        
-    except Exception as e:
-        print(f"❌ Error in mystatus command: {e}")
-        import traceback
-        traceback.print_exc()
+    user_id = interaction.user.id
+    user_data = await db.get_user(user_id)
+    
+    # Refresh premium status check
+    premium_status = await db.check_premium_status(user_id)
+    user_data['premium_access'] = premium_status
+    
+    embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
+    
+    # Premium status
+    if user_data.get('premium_access') and user_data.get('premium_until'):
         try:
-            await interaction.followup.send("❌ Error loading your status. Please try again.", ephemeral=True)
+            premium_until = datetime.fromisoformat(user_data['premium_until'])
+            embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d %H:%M')}", inline=False)
         except:
-            print("Failed to send error message to user")
+            embed.add_field(name="Premium Access", value="✅ Active (invalid date format)", inline=False)
+    else:
+        embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
+    
+    # Question usage
+    questions_answered = user_data.get('questions_answered', 0)
+    free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
+    remaining = max(0, free_limit - questions_answered)
+    
+    embed.add_field(
+        name="Question Usage", 
+        value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}\n**Free limit:** {free_limit}", 
+        inline=False
+    )
+    
+    # Admin status
+    if user_data.get('is_admin') or user_id in config.PREMIUM_SETTINGS["admin_ids"]:
+        embed.add_field(name="Admin Status", value="✅ You have admin privileges", inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ADMIN COMMANDS
+# Admin commands group
+admin_group = app_commands.Group(name="admin", description="Admin management commands")
+
 @admin_group.command(name="add_ticket", description="Add premium access to a user")
 @app_commands.choices(duration=[
     app_commands.Choice(name="7 Days", value="7days"),
@@ -571,220 +426,123 @@ async def my_status(interaction: discord.Interaction):
     app_commands.Choice(name="3 Months", value="3months")
 ])
 async def add_ticket(interaction: discord.Interaction, user: discord.User, duration: app_commands.Choice[str]):
+    # Check if user is admin
+    user_data = await db.get_user(interaction.user.id)
+    if not user_data.get('is_admin') and interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
+        await interaction.response.send_message("❌ Admin access required.", ephemeral=True)
+        return
+    
+    # Add premium access
+    days = config.PREMIUM_SETTINGS["ticket_durations"][duration.value]
+    premium_until = await db.add_premium_access(user.id, days)
+    
+    embed = discord.Embed(
+        title="✅ Ticket Added",
+        description=f"Premium access granted to {user.mention}\n"
+                  f"**Duration:** {duration.name}\n"
+                  f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}",
+        color=discord.Color.green()
+    )
+    
+    await interaction.response.send_message(embed=embed)
+    
+    # Notify the user
     try:
-        # DEFER THE RESPONSE IMMEDIATELY to prevent timeout
-        await interaction.response.defer(ephemeral=True)
-        
-        print(f"🎫 Admin command received from {interaction.user.id} for user {user.id}")
-        
-        # Check if user is admin
-        user_data = db.get_user(interaction.user.id)
-        is_admin = user_data.get('is_admin') or interaction.user.id in config.PREMIUM_SETTINGS["admin_ids"]
-        
-        if not is_admin:
-            await interaction.followup.send("❌ Admin access required.", ephemeral=True)
-            return
-        
-        # Add premium access
-        days = config.PREMIUM_SETTINGS["ticket_durations"][duration.value]
-        premium_until = db.add_premium_access(user.id, days)
-        
-        embed = discord.Embed(
-            title="✅ Ticket Added",
-            description=f"Premium access granted to {user.mention}\n"
-                      f"**Duration:** {duration.name}\n"
-                      f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}",
-            color=discord.Color.green()
+        user_embed = discord.Embed(
+            title="🎉 Premium Access Granted!",
+            description=f"You've received {duration.name} of premium access!\n"
+                      f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}\n\n"
+                      f"You can now use the bot without limits in our premium channel.",
+            color=discord.Color.gold()
         )
-        
-        await interaction.followup.send(embed=embed)
-        
-        # Notify the user
-        try:
-            user_embed = discord.Embed(
-                title="🎉 Premium Access Granted!",
-                description=f"You've received {duration.name} of premium access!\n"
-                          f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}\n\n"
-                          f"You can now use the bot without limits in our premium channel.",
-                color=discord.Color.gold()
-            )
-            await user.send(embed=user_embed)
-        except Exception as e:
-            print(f"❌ Could not DM user: {e}")
-            
-    except Exception as e:
-        print(f"❌ Error in add_ticket command: {e}")
-        import traceback
-        traceback.print_exc()
-        try:
-            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
-        except:
-            print("Failed to send error message to user")
-
-@admin_group.command(name="add_ticket_by_id", description="Add premium access using user ID")
-@app_commands.choices(duration=[
-    app_commands.Choice(name="7 Days", value="7days"),
-    app_commands.Choice(name="14 Days", value="14days"),
-    app_commands.Choice(name="1 Month", value="1month"),
-    app_commands.Choice(name="3 Months", value="3months")
-])
-async def add_ticket_by_id(interaction: discord.Interaction, user_id: str, duration: app_commands.Choice[str]):
-    try:
-        # DEFER THE RESPONSE IMMEDIATELY
-        await interaction.response.defer(ephemeral=True)
-        
-        # Check if user is admin
-        user_data = db.get_user(interaction.user.id)
-        is_admin = user_data.get('is_admin') or interaction.user.id in config.PREMIUM_SETTINGS["admin_ids"]
-        
-        if not is_admin:
-            await interaction.followup.send("❌ Admin access required.", ephemeral=True)
-            return
-        
-        # Convert user_id to integer
-        try:
-            user_id_int = int(user_id)
-        except ValueError:
-            await interaction.followup.send("❌ Invalid user ID format. Please provide a numeric ID.", ephemeral=True)
-            return
-        
-        # Try to fetch user for display name
-        try:
-            user = await bot.fetch_user(user_id_int)
-            user_display = f"{user.name} ({user_id})"
-        except:
-            user_display = f"User {user_id}"
-        
-        # Add premium access
-        days = config.PREMIUM_SETTINGS["ticket_durations"][duration.value]
-        premium_until = db.add_premium_access(user_id_int, days)
-        
-        embed = discord.Embed(
-            title="✅ Ticket Added",
-            description=f"Premium access granted to {user_display}\n"
-                      f"**Duration:** {duration.name}\n"
-                      f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}",
-            color=discord.Color.green()
-        )
-        
-        await interaction.followup.send(embed=embed)
-        
-        # Try to notify the user
-        try:
-            user_obj = await bot.fetch_user(user_id_int)
-            user_embed = discord.Embed(
-                title="🎉 Premium Access Granted!",
-                description=f"You've received {duration.name} of premium access!\n"
-                          f"**Expires:** {premium_until.strftime('%Y-%m-%d %H:%M')}\n\n"
-                          f"You can now use the bot without limits in our premium channel.",
-                color=discord.Color.gold()
-            )
-            await user_obj.send(embed=user_embed)
-        except Exception as e:
-            print(f"❌ Could not DM user: {e}")
-            
-    except Exception as e:
-        print(f"❌ Error in add_ticket_by_id command: {e}")
-        import traceback
-        traceback.print_exc()
-        try:
-            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
-        except:
-            print("Failed to send error message to user")
+        await user.send(embed=user_embed)
+    except:
+        pass  # Can't DM user
 
 @admin_group.command(name="check_access", description="Check a user's access status")
 async def check_access(interaction: discord.Interaction, user: discord.User):
-    try:
-        # DEFER THE RESPONSE IMMEDIATELY
-        await interaction.response.defer(ephemeral=True)
-        
-        user_data = db.get_user(user.id)
-        access_control = AccessControl(db)
-        
-        embed = discord.Embed(title=f"Access Status: {user.display_name}", color=discord.Color.blue())
-        
-        # Premium status
-        if user_data.get('premium_access'):
-            premium_until = datetime.fromisoformat(user_data['premium_until'])
-            embed.add_field(name="Premium Status", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d')}", inline=False)
-        else:
-            embed.add_field(name="Premium Status", value="❌ No active subscription", inline=False)
-        
-        # Question usage
-        questions_answered = user_data.get('questions_answered', 0)
-        remaining = access_control.get_remaining_questions(user.id)
-        embed.add_field(name="Question Usage", value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}", inline=False)
-        
-        # Admin status
-        if user_data.get('is_admin') or user.id in config.PREMIUM_SETTINGS["admin_ids"]:
-            embed.add_field(name="Admin", value="✅ Yes", inline=True)
-        else:
-            embed.add_field(name="Admin", value="❌ No", inline=True)
-        
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        
-    except Exception as e:
-        print(f"❌ Error in check_access command: {e}")
-        try:
-            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
-        except:
-            print("Failed to send error message to user")
+    user_data = await db.get_user(user.id)
+    
+    embed = discord.Embed(title=f"Access Status: {user.display_name}", color=discord.Color.blue())
+    
+    # Premium status
+    if user_data.get('premium_access'):
+        premium_until = datetime.fromisoformat(user_data['premium_until'])
+        embed.add_field(name="Premium Status", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d')}", inline=False)
+    else:
+        embed.add_field(name="Premium Status", value="❌ No active subscription", inline=False)
+    
+    # Question usage
+    questions_answered = user_data.get('questions_answered', 0)
+    free_limit = config.PREMIUM_SETTINGS["free_question_limit"]
+    remaining = max(0, free_limit - questions_answered)
+    embed.add_field(name="Question Usage", value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}", inline=False)
+    
+    # Admin status
+    if user_data.get('is_admin') or user.id in config.PREMIUM_SETTINGS["admin_ids"]:
+        embed.add_field(name="Admin", value="✅ Yes", inline=True)
+    else:
+        embed.add_field(name="Admin", value="❌ No", inline=True)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@admin_group.command(name="list_members", description="List server members (for debugging)")
-async def list_members(interaction: discord.Interaction):
-    try:
-        # DEFER THE RESPONSE IMMEDIATELY
-        await interaction.response.defer(ephemeral=True)
-        
-        if interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
-            await interaction.followup.send("❌ Admin only command.", ephemeral=True)
-            return
-        
-        # Get the guild (server)
-        guild = interaction.guild
-        if not guild:
-            await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
-            return
-        
-        # Fetch all members
-        members = []
-        async for member in guild.fetch_members(limit=100):
-            members.append(f"{member.name} ({member.id})")
-        
-        # Send in chunks if too many
-        if len(members) > 0:
-            chunk_size = 20
-            for i in range(0, len(members), chunk_size):
-                chunk = members[i:i + chunk_size]
-                embed = discord.Embed(
-                    title=f"Server Members ({i+1}-{min(i+chunk_size, len(members))}/{len(members)})",
-                    description="\n".join(chunk),
-                    color=discord.Color.blue()
-                )
-                if i == 0:
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                else:
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send("❌ No members found.", ephemeral=True)
-            
-    except Exception as e:
-        print(f"❌ Error in list_members: {e}")
-        try:
-            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
-        except:
-            print("Failed to send error message to user")
+@admin_group.command(name="stats", description="Get bot statistics")
+async def admin_stats(interaction: discord.Interaction):
+    # Check if user is admin
+    user_data = await db.get_user(interaction.user.id)
+    if not user_data.get('is_admin') and interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
+        await interaction.response.send_message("❌ Admin access required.", ephemeral=True)
+        return
+    
+    stats = await db.get_user_stats()
+    
+    embed = discord.Embed(
+        title="Bot Statistics",
+        description="Overall bot usage statistics",
+        color=discord.Color.purple()
+    )
+    
+    embed.add_field(name="Total Users", value=stats['total_users'], inline=True)
+    embed.add_field(name="Premium Users", value=stats['premium_users'], inline=True)
+    embed.add_field(name="Questions Answered", value=stats['total_questions_answered'], inline=True)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# Register the admin group with the bot
+@bot.tree.command(name="debug_questions", description="Debug question counter")
+async def debug_questions(interaction: discord.Interaction):
+    if interaction.user.id not in config.PREMIUM_SETTINGS["admin_ids"]:
+        await interaction.response.send_message("❌ Admin only command.", ephemeral=True)
+        return
+    
+    user_id = interaction.user.id
+    user_data = await db.get_user(user_id)
+    
+    debug_info = f"""
+    User ID: {user_id}
+    questions_answered: {user_data.get('questions_answered', 0)}
+    Raw data: {user_data}
+    """
+    
+    await interaction.response.send_message(f"```{debug_info}```", ephemeral=True)
+
+# Register admin commands
 bot.tree.add_command(admin_group)
+
+# Error handling
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    print(f"Error: {error}")
+
+@bot.event
+async def on_app_command_error(interaction, error):
+    print(f"App Command Error: {error}")
+    try:
+        await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+    except:
+        pass
 
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
-
-
-
-
-
-
-
