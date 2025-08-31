@@ -45,13 +45,16 @@ admin_group = app_commands.Group(name="admin", description="Admin management com
 async def on_ready():
     print(f'{bot.user} is now online!')
     
-    # Test MongoDB connection
+    # Test MongoDB connection with timeout
     try:
-        # Simple test query
-        test_user = db.get_user(12345)  # Test with dummy ID
+        # Simple test that won't hang
+        import asyncio
+        await asyncio.wait_for(asyncio.to_thread(db.get_user, 12345), timeout=5.0)
         print("✅ MongoDB connection test successful")
+    except asyncio.TimeoutError:
+        print("❌ MongoDB connection timed out - using fallback mode")
     except Exception as e:
-        print(f"❌ MongoDB connection failed: {e}")
+        print(f"❌ MongoDB connection test failed: {e}")
     
     try:
         # Sync commands globally
@@ -60,8 +63,6 @@ async def on_ready():
         
     except Exception as e:
         print(f"❌ Error syncing commands: {e}")
-        import traceback
-        traceback.print_exc()
 
 @bot.tree.command(name="math_practice", description="Practice math questions")
 @app_commands.choices(topic=[app_commands.Choice(name=name, value=name) for name in config.MATH_TOPICS])
@@ -783,6 +784,7 @@ bot.tree.add_command(admin_group)
 # Run the bot
 if __name__ == "__main__":
     bot.run(config.BOT_TOKEN)
+
 
 
 
