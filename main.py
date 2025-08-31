@@ -394,6 +394,32 @@ async def question_timeout(user_id, timeout):
             pass
         del active_questions[user_id]
 
+@bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
+async def my_status(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    access_control = AccessControl(db)
+    user_data = db.get_user(user_id)
+    
+    embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
+    
+    # Premium status
+    if user_data.get('premium_access'):
+        premium_until = datetime.fromisoformat(user_data['premium_until'])
+        embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d')}", inline=False)
+    else:
+        embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
+    
+    # Question usage - FIXED LINE
+    questions_answered = user_data.get('questions_answered', 0)
+    remaining = access_control.get_remaining_questions(user_id)
+    embed.add_field(name="Question Usage", value=f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}", inline=False)
+    
+    # Admin status
+    if user_data.get('is_admin') or user_id in config.PREMIUM_SETTINGS["admin_ids"]:
+        embed.add_field(name="Admin", value="✅ You have admin privileges", inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 # Admin commands group
 @bot.tree.command(name="admin", description="Admin management commands")
 async def admin(interaction: discord.Interaction):
@@ -474,33 +500,8 @@ async def check_access(interaction: discord.Interaction, user: discord.User):
 # Register the admin group
 bot.tree.add_command(admin_group)
 
-@bot.tree.command(name="mystatus", description="Check your access status and remaining questions")
-async def my_status(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    access_control = AccessControl(db)
-    user_data = db.get_user(user_id)
-    
-    embed = discord.Embed(title="Your Access Status", color=discord.Color.blue())
-    
-    # Premium status
-    if user_data.get('premium_access'):
-        premium_until = datetime.fromisoformat(user_data['premium_until'])
-        embed.add_field(name="Premium Access", value=f"✅ Active until {premium_until.strftime('%Y-%m-%d')}", inline=False)
-    else:
-        embed.add_field(name="Premium Access", value="❌ No active subscription", inline=False)
-    
-    # Question usage
-    questions_answered = user_data.get('questions_answered', 0)
-    remaining = access_control.get_remaining_questions(user_id)
-    embed.add_field(name="Question Usage", f"**Answered:** {questions_answered}\n**Remaining free:** {remaining}", inline=False)
-    
-    # Admin status
-    if user_data.get('is_admin') or user_id in config.PREMIUM_SETTINGS["admin_ids"]:
-        embed.add_field(name="Admin", value="✅ You have admin privileges", inline=False)
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
 # Run the bot
 if __name__ == "__main__":
 
     bot.run(config.BOT_TOKEN)
+
